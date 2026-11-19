@@ -76,6 +76,8 @@ class PctPathMission(Node):
         self.publish_map_tf = bool(self.declare_parameter(
             'publish_map_tf', True).value)
         self.use_map_localization = self.declare_parameter('use_map_localization', False).value
+        self.tasks = None
+        self.web = None
 
         if not self.use_map_localization:
             self.building = (
@@ -132,6 +134,11 @@ class PctPathMission(Node):
             self.create_subscription(Bspline, '/scan/planning/bspline', self.on_plan, reliable)
             self.create_timer(0.2, self.tick_localized, clock=Clock(clock_type=ClockType.STEADY_TIME))
         self.complete_pub.publish(Bool(data=False))
+        if self.declare_parameter('web_console', False).value:
+            from waypoint_tasks import WaypointTasks
+            from navigation_web import NavigationWeb
+            self.tasks = WaypointTasks(self, latched)
+            self.web = NavigationWeb(self, self.declare_parameter('web_port', 8765).value)
         self.get_logger().info(
             'Waiting for PCT path on %s and navigation readiness on %s' %
             (self.input_topic, self.ready_topic))
@@ -142,6 +149,8 @@ class PctPathMission(Node):
             return
         if len(msg.poses) < 2:
             self.get_logger().error('Rejected PCT path with fewer than two poses')
+            if self.tasks:
+                self.tasks.stop('failed', '目标不可达，未找到全局路线')
             return
         values = [
             (pose.pose.position.x, pose.pose.position.y, pose.pose.position.z)
@@ -149,6 +158,8 @@ class PctPathMission(Node):
         ]
         if not all(math.isfinite(value) for point in values for value in point):
             self.get_logger().error('Rejected PCT path containing non-finite coordinates')
+            if self.tasks:
+                self.tasks.stop('failed', '规划器返回了无效坐标')
             return
         self.raw_path = msg
         self.get_logger().info('Received Building-local PCT path with %d poses' %
@@ -176,13 +187,30 @@ class PctPathMission(Node):
     def on_localization(self, msg):
         try:
             status = json.loads(msg.data)
+            if self.web:
+                seed_stamp = status.get('seed_stamp_ns')
+                if seed_stamp is not None and seed_stamp == self.web.expired_seed:
+                    return
+                if self.web.seed_pending is not None:
+                    if seed_stamp != self.web.seed_pending:
+                        if status['state'] != 'COLLECTING' or seed_stamp is None or seed_stamp <= self.web.seed_pending:
+                            return
+                        self.web.seed_pending = None
+                    elif status['state'] in ('FAILED', 'LOCALIZED', 'LOST'):
+                        self.web.seed_pending = None
+                if seed_stamp != self.web.display_seed_stamp:
+                    self.web.seed = None
+                self.web.localization = status
             fix = int(status['fix_stamp_ns']) if status['state'] == 'LOCALIZED' else None
         except (KeyError, ValueError, TypeError):
             fix = None
         if fix == self.fix_stamp_ns:
             return
         if self.fix_stamp_ns is not None:
-            self.cancel_localized_mission()
+            if self.tasks and self.tasks.active:
+                self.tasks.stop('failed', '定位已失效，请重新定位后继续')
+            else:
+                self.cancel_localized_mission()
         self.fix_stamp_ns = fix
         self.start_if_ready()
 
@@ -199,7 +227,7 @@ class PctPathMission(Node):
             stop = PoseStamped()
             stop.header = stop_path.header
             stop.pose.position.x, stop.pose.position.y, stop.pose.position.z = self.initial_odom[:3]
-            stop.pose.orientation.w = 1.0
+            stop.pose.orientation.w = 0.0 if self.tasks else 1.0
             self.goal_pub.publish(stop)
         self.raw_path = self.request_stamp = self.goal_stamp = self.map_from_odom = None
         self.started = self.completed = False
@@ -217,6 +245,8 @@ class PctPathMission(Node):
         self.permit_pub.publish(permit)
 
     def tick_localized(self):
+        if self.tasks:
+            self.tasks.tick()
         self.publish_permit()
         self.start_if_ready()
 
@@ -236,6 +266,8 @@ class PctPathMission(Node):
             self.plan_ready_pub.publish(Bool(data=True))
 
     def request_localized_path(self):
+        if self.tasks and not self.tasks.can_request():
+            return
         if self.fix_stamp_ns is None or self.request_stamp is not None:
             return
         now_ns = self.get_clock().now().nanoseconds
@@ -251,13 +283,16 @@ class PctPathMission(Node):
         self.map_from_odom = (offset.x, offset.y, offset.z, yaw_from_quaternion(latest.transform.rotation))
         start = PoseStamped()
         start.header.frame_id = self.pct_frame_id
-        start.header.stamp = Time(nanoseconds=self.odom_stamp_ns).to_msg()
+        start.header.stamp = self.next_goal_stamp() if self.tasks else Time(nanoseconds=self.odom_stamp_ns).to_msg()
         self.request_stamp = start.header.stamp
         start_xyz = transform_point(self.initial_odom[:3], self.map_from_odom)
         start.pose.position.x, start.pose.position.y, start.pose.position.z = start_xyz
         yaw = self.initial_odom[3] + self.map_from_odom[3]
         start.pose.orientation.z, start.pose.orientation.w = math.sin(0.5*yaw), math.cos(0.5*yaw)
-        self.start_pub.publish(start)
+        if self.tasks:
+            self.tasks.request_route(start)
+        else:
+            self.start_pub.publish(start)
         self.get_logger().info('Requested PCT route from localized base in %s: [%.3f %.3f %.3f]' %
                                (self.pct_frame_id, *start_xyz))
 
@@ -290,6 +325,8 @@ class PctPathMission(Node):
             if math.dist(points[0][:2], self.initial_odom[:2]) > 0.75 or abs(points[0][2] - self.initial_odom[2]) > 0.75:
                 self.get_logger().error('Rejected PCT route: its first cell does not match the localized base/floor')
                 self.raw_path = None
+                if self.tasks:
+                    self.tasks.stop('failed', '路线起点与当前定位不一致')
                 return
 
         for index, point in enumerate(points):
@@ -310,6 +347,14 @@ class PctPathMission(Node):
         final_goal = PoseStamped()
         final_goal.header = transformed.header
         final_goal.pose = transformed.poses[-1].pose
+        if self.tasks and self.tasks.active:
+            yaw = self.tasks.state['headings'][self.tasks.state['index']]
+            rotation = final_goal.pose.orientation
+            if yaw is None:
+                rotation.z = rotation.w = 0.0
+            else:
+                angle = (yaw - self.map_from_odom[3]) / 2
+                rotation.z, rotation.w = math.sin(angle), math.cos(angle)
         self.goal_stamp = (stamp.sec, stamp.nanosec)
 
         # Arm final-goal latching before SCAN can publish the first spline.
@@ -355,6 +400,9 @@ class PctPathMission(Node):
         self.completed = True
         if self.use_map_localization:
             self.publish_permit()
+        if self.tasks:
+            self.tasks.reached()
+            return
         self.complete_pub.publish(Bool(data=True))
         self.get_logger().info('PCT cross-floor mission complete')
 
@@ -395,6 +443,8 @@ def main():
         # already tearing down.  Treat that as an ordinary shutdown instead
         # of printing a misleading traceback from destroy_node().
         try:
+            if node.web:
+                node.web.close()
             node.destroy_node()
             if rclpy.ok():
                 rclpy.shutdown()

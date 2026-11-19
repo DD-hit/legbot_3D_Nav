@@ -76,6 +76,7 @@ class MapLocalizer(Node):
         self.reference = None
         self.job = None
         self.generation = 0
+        self.seed_stamp_ns = None
         self.frame_count = self.settings['scan_frames'] + self.settings['validation_frames']
         self.frames = deque(maxlen=self.frame_count + 2)
         self.transform = None
@@ -102,12 +103,13 @@ class MapLocalizer(Node):
         if state != 'LOCALIZED':
             self.transform = None
         self.ready_pub.publish(Bool(data=state == 'LOCALIZED'))
-        payload = dict(state=state, reason=reason, request_id=self.generation, **details)
+        payload = dict(state=state, reason=reason, request_id=self.generation, seed_stamp_ns=self.seed_stamp_ns, **details)
         self.status_pub.publish(String(data=json.dumps(payload)))
         self.get_logger().info(f'initial localization {self.generation}: {state} ({reason})')
 
     def on_seed(self, message):
         self.generation += 1
+        self.seed_stamp_ns = Time.from_msg(message.header.stamp).nanoseconds
         self.frames.clear()
         self.transform = None
         self.last_sensor = None

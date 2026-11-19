@@ -179,6 +179,8 @@ ros2 launch legbot_bringup pct_cross_floor_demo.launch.py
 
 该演示默认使用 Gazebo 真值里程计。可用 `navigation_source:=fastlio` 测试激光惯性里程计，或用 `navigation_source:=map_localized` 手动给出初始位姿，再用雷达和地图匹配。操作见[多楼层初始定位指南](docs/INITIAL_LOCALIZATION_CN.md)。
 
+在 `map_localized` 模式加上 `web_console:=true` 可使用浏览器拖动给初始位姿、选择楼层并下发单点或有序多点任务。启动、连接和仿真验收方法见 [Web 导航上位机指南](docs/WEB_NAVIGATION_CN.md)。
+
 `PCT` 按目标 `z` 选层，确认目标栅格可达后，路线末点保留用户给出的 `x、y`，高度采用该层的机身规划高度。跨层任务默认在机身估计水平误差进入 `4.2 cm` 时制动，在同一楼层的 `7 cm` 范围内站稳 `0.60 s` 后确认到点。
 
 ## 策略配置

@@ -37,6 +37,7 @@ def generate_launch_description():
     actions.append(DeclareLaunchArgument('max_acc', default_value='0.30'))
     actions.append(DeclareLaunchArgument('finish_dist', default_value='0.40'))
     actions.append(DeclareLaunchArgument('goal_settle_time', default_value='0.0'))
+    actions.append(DeclareLaunchArgument('respect_goal_heading', default_value='false'))
     actions.append(DeclareLaunchArgument(
         'finish_dist_z', default_value='1.5',
         description='Same-floor Z tolerance; waypoint arrival itself is decided in XY'))
@@ -91,6 +92,7 @@ def generate_launch_description():
             'fsm.odom_twist_in_body_frame': ParameterValue(LaunchConfiguration('odom_twist_in_body_frame'), value_type=bool),
             'fsm.finish_dist': ParameterValue(LaunchConfiguration('finish_dist'), value_type=float),
             'fsm.goal_settle_time': ParameterValue(LaunchConfiguration('goal_settle_time'), value_type=float),
+            'fsm.respect_goal_heading': ParameterValue(LaunchConfiguration('respect_goal_heading'), value_type=bool),
             'fsm.finish_dist_z': ParameterValue(LaunchConfiguration('finish_dist_z'), value_type=float),
         }], remappings=[
             ('/scan_planner_node/optimal_list', '/local_planner/optimal_path'),
@@ -133,6 +135,7 @@ def generate_launch_description():
             'cmd_yaw_accel_limit': ParameterValue(LaunchConfiguration('cmd_yaw_accel_limit'), value_type=float),
             'finish_dist': ParameterValue(LaunchConfiguration('finish_dist'), value_type=float),
             'goal_settle_time': ParameterValue(LaunchConfiguration('goal_settle_time'), value_type=float),
+            'respect_goal_heading': ParameterValue(LaunchConfiguration('respect_goal_heading'), value_type=bool),
             'finish_dist_z': ParameterValue(LaunchConfiguration('finish_dist_z'), value_type=float),
             'use_goal_z': ParameterValue(LaunchConfiguration('manual_goal_use_message_z'), value_type=bool),
             'use_sim_time': ParameterValue(LaunchConfiguration('use_sim_time'), value_type=bool),

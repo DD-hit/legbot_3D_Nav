@@ -24,6 +24,7 @@ legbot::Publisher goal_stop_ack_pub;
 legbot::Subscriber bspline_sub;
 legbot::Subscriber odom_sub;
 legbot::Subscriber goal_sub;
+legbot::Subscriber turn_clear_sub;
 legbot::Timer cmd_timer;
 
 bool receive_traj = false;
@@ -41,6 +42,13 @@ legbot::Time latest_traj_start;
 bool have_goal_time = false;
 bool have_goal_position = false;
 bool goal_stop_latched = false;
+bool respect_goal_heading = false;
+bool has_goal_heading = false;
+bool aligning_goal = false;
+double goal_heading = 0.0;
+constexpr double heading_tolerance = 4.0 * M_PI / 180.0;
+double settle_heading = 0.0;
+legbot::Time last_turn_clear;
 geometry_msgs::msg::PoseStamped latest_goal_msg;
 Eigen::Vector3d latest_goal_pos = Eigen::Vector3d::Zero();
 
@@ -116,6 +124,9 @@ void loadParams(const legbot::NodeHandle &nh)
   nh.param("finish_dist", finish_dist, 0.25);
   nh.param("finish_dist_z", finish_dist_z, 0.20);
   nh.param("goal_settle_time", goal_settle_time, 0.0);
+  nh.param("respect_goal_heading", respect_goal_heading, false);
+  if (respect_goal_heading && goal_settle_time <= 0.0)
+    goal_settle_time = 0.6;
   nh.param("goal_settle_max_drift", goal_settle_max_drift, 0.025);
   goal_capture_dist = goal_settle_time > 0.0 ? 0.6 * finish_dist : finish_dist;
   nh.param("use_goal_z", use_goal_z, false);
@@ -250,6 +261,11 @@ void goalCallback(const geometry_msgs::msg::PoseStamped::ConstSharedPtr &msg)
   goal_stop_latched = false;
   goal_settle_start = legbot::Time();
   latest_goal_msg = *msg;
+  const auto &rotation = msg->pose.orientation;
+  has_goal_heading = respect_goal_heading && std::hypot(rotation.w, rotation.z) > 0.99;
+  goal_heading = has_goal_heading ? legbot_tf::getYaw(rotation) : 0.0;
+  aligning_goal = false;
+  last_turn_clear = legbot::Time();
   // A new point can be almost exactly behind the robot. Do not carry the
   // preceding goal's rotate hysteresis/direction into that U-turn.
   rotate_only = false;
@@ -330,6 +346,12 @@ void bsplineCallback(const scan_planner::msg::Bspline::ConstSharedPtr &msg)
   ROS_INFO("[scan_go2_cmd_adapter] receive traj %d duration %.3fs", traj_id, traj_duration);
 }
 
+void turnClearCallback(const geometry_msgs::msg::PoseStamped::ConstSharedPtr &msg)
+{
+  if (has_goal_heading && msg->header == latest_goal_msg.header)
+    last_turn_clear = legbot::Time::now();
+}
+
 bool onGoalFloor(double height)
 {
   return !use_goal_z || std::abs(latest_goal_pos.z() - height) <= finish_dist_z;
@@ -375,14 +397,18 @@ void odomCallback(const nav_msgs::msg::Odometry::ConstSharedPtr &msg)
   last_odom_time = now;
   if (goal_settle_time > 0.0 && have_goal_position && !goal_stop_latched && stamp >= latest_goal_time)
   {
-    const double radius = goal_settle_start.isZero() ? goal_capture_dist : finish_dist;
-    if (!insideGoal((latest_goal_pos.head<2>() - odom_pos.head<2>()).norm(), radius))
+    const double distance = (latest_goal_pos.head<2>() - odom_pos.head<2>()).norm();
+    aligning_goal = has_goal_heading && insideGoal(distance, aligning_goal ? finish_dist : 0.85 * finish_dist);
+    const double radius = !aligning_goal && goal_settle_start.isZero() ? goal_capture_dist : finish_dist;
+    if (!insideGoal(distance, radius) || (has_goal_heading && std::abs(normalizeAngle(goal_heading - odom_yaw)) > heading_tolerance))
       goal_settle_start = legbot::Time();
     else if (goal_settle_start.isZero() ||
+             (has_goal_heading && std::abs(normalizeAngle(odom_yaw - settle_heading)) > 2.0 * M_PI / 180.0) ||
              (odom_pos.head<2>() - goal_settle_position).norm() > goal_settle_max_drift)
     {
       goal_settle_start = stamp;
       goal_settle_position = odom_pos.head<2>();
+      settle_heading = odom_yaw;
     }
   }
 }
@@ -408,6 +434,16 @@ void cmdCallback(const legbot::TimerEvent &)
   if (have_goal_position)
   {
     goal_xy_distance = (latest_goal_pos.head<2>() - odom_pos.head<2>()).norm();
+    const double yaw_error = normalizeAngle(goal_heading - odom_yaw);
+    if (!goal_stop_latched && aligning_goal && std::abs(yaw_error) > heading_tolerance)
+    {
+      publishExecutionFrozen(true);
+      if (!last_turn_clear.isZero() && (now - last_turn_clear).toSec() >= 0.0 && (now - last_turn_clear).toSec() < 0.15)
+        publishStop(std::copysign(clamp(std::abs(yaw_error) * kp_yaw, 0.32, 0.65), yaw_error));
+      else
+        publishStop();
+      return;
+    }
     // XY decides arrival. Optional Z is a broad same-floor gate, not a
     // precision height target.
     const bool holding = goal_settle_time > 0.0 ? !goal_settle_start.isZero() :
@@ -428,6 +464,9 @@ void cmdCallback(const legbot::TimerEvent &)
         ack.pose.position.x = odom_pos.x();
         ack.pose.position.y = odom_pos.y();
         ack.pose.position.z = odom_pos.z();
+        ack.pose.orientation.x = ack.pose.orientation.y = 0.0;
+        ack.pose.orientation.z = std::sin(odom_yaw / 2);
+        ack.pose.orientation.w = std::cos(odom_yaw / 2);
         goal_stop_ack_pub.publish(ack);
         goal_stop_latched = true;
         ROS_INFO("[scan_go2_cmd_adapter] final goal reached: XY error %.3f m, hold %.2f s.",
@@ -624,6 +663,8 @@ int main(int argc, char **argv)
   legbot::NodeHandle nh("~");
 
   loadParams(nh);
+  if (respect_goal_heading)
+    turn_clear_sub = node.subscribe("/scan/terminal_turn_clear", 1, turnClearCallback);
 
   bspline_sub = node.subscribe("/scan/planning/bspline", 10, bsplineCallback,
                                legbot::TransportHints().tcpNoDelay());

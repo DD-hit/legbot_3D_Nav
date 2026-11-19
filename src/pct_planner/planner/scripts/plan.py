@@ -37,6 +37,7 @@ parser.add_argument('--optimize', action='store_true',
                     help='Use experimental GPMP optimization instead of the stable PCT A* route')
 args = parser.parse_args(remove_ros_args(sys.argv)[1:])
 use_localized_start = node.declare_parameter('use_localized_start', False).value
+runtime_goals = node.declare_parameter('runtime_goals', False).value
 localized_stamp = None
 
 cfg = Config()
@@ -179,6 +180,17 @@ def on_localized_start(message):
     start_pos = candidate
     localized_stamp = message.header.stamp
     plan_callback()
+
+
+def on_route_request(request):
+    global end_pos
+    if len(request.poses) != 2 or request.header.frame_id != args.frame_id:
+        return
+    start, goal = request.poses
+    position = goal.pose.position
+    end_pos = np.array([position.x, position.y, position.z], dtype=np.float32)
+    if np.isfinite(end_pos).all() and start.header == request.header:
+        on_localized_start(start)
 
 
 def plan_callback():
@@ -343,6 +355,9 @@ def pct_plan():
     # static clouds continuously: doing so steals CPU/DDS bandwidth from SCAN.
     cloud_timer = node.create_timer(0.5, publish_clouds_when_rviz_is_ready)
 
+    if runtime_goals:
+        node.create_subscription(Path, '/pct/route_request', on_route_request, 10)
+        return
     if use_localized_start:
         node.create_subscription(PoseStamped, '/pct/localized_start', on_localized_start, cloud_qos)
         node.get_logger().info('Waiting for a localized base pose in ' + args.frame_id)

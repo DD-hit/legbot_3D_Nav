@@ -30,6 +30,9 @@ namespace scan_planner
     nh.param("fsm/finish_dist", finish_dist_, 0.35);
     nh.param("fsm/finish_dist_z", finish_dist_z_, 0.25);
     wait_for_goal_ack_ = navi_mode_ == NAVI_MODE::REFERENCE_PATH && nh.param("fsm/goal_settle_time", 0.0) > 0.0;
+    nh.param("fsm/respect_goal_heading", respect_goal_heading_, false);
+    if (respect_goal_heading_)
+      turn_clear_pub_ = nh.advertise<geometry_msgs::msg::PoseStamped>("/scan/terminal_turn_clear", 1);
     nh.param("fsm/planning_horizon", planning_horizon_, -1.0);
     nh.param("fsm/emergency_time_", emergency_time_, 1.0);
     nh.param("fsm/fail_safe", enable_fail_safe_, true);
@@ -429,6 +432,7 @@ namespace scan_planner
       if (msg && cancel_on_empty_path_)
       {
         pending_path_.reset();
+        check_terminal_turn_ = false;
         have_target_ = false;
         have_new_target_ = false;
         trigger_ = false;
@@ -478,6 +482,8 @@ namespace scan_planner
     }
 
     reference_goal_ = msg->poses.back();
+    const auto &rotation = reference_goal_.pose.orientation;
+    check_terminal_turn_ = respect_goal_heading_ && std::hypot(rotation.z, rotation.w) > 0.99;
     reference_goal_.header = msg->header;
     end_pt_ = raw_waypoints.back();
     reference_progress_time_ = 0.0;
@@ -608,6 +614,8 @@ namespace scan_planner
 
   void SCANReplanFSM::goalAckCallback(const geometry_msgs::msg::PoseStamped::ConstSharedPtr &msg)
   {
+    if (msg->header == reference_goal_.header)
+      check_terminal_turn_ = false;
     if (!have_target_ || msg->header != reference_goal_.header)
       return;
     callEmergencyStop(odom_pos_);
@@ -718,6 +726,15 @@ namespace scan_planner
   void SCANReplanFSM::execFSMCallback(const legbot::TimerEvent &e)
   {
     updateLocalTrajTimeFreeze();
+
+    if (check_terminal_turn_ && have_odom_ && referenceGoalReached())
+    {
+      bool clear = true;
+      for (int angle = 0; angle < 180 && clear; angle += 10)
+        clear = planner_manager_->grid_map_->getInflateOccupancy(odom_pos_, angle * M_PI / 180.0) == 0;
+      if (clear)
+        turn_clear_pub_.publish(reference_goal_);
+    }
 
     if (wait_for_goal_ack_ && have_target_ && go2_execution_frozen_ && referenceGoalReached())
       return;
@@ -1284,7 +1301,8 @@ namespace scan_planner
     const double max_vel = planner_manager_->pp_.max_vel_;
     const double max_acc = planner_manager_->pp_.max_acc_;
     const double duration = planner_manager_->global_data_.global_duration_;
-    double t_step = max_vel > 1e-6 ? planning_horizon_ / 20.0 / max_vel : 0.01;
+    const double horizon = respect_goal_heading_ && replan_fail_count_ >= 2 ? planning_horizon_ * 0.5 : planning_horizon_;
+    double t_step = max_vel > 1e-6 ? horizon / 20.0 / max_vel : 0.01;
     t_step = std::max(t_step, 0.01);
 
     double t_proj = reference_progress_time_;
@@ -1320,7 +1338,7 @@ namespace scan_planner
       total_dist += manual_xy_only
           ? (pos_t.head<2>() - prev_pos.head<2>()).norm()
           : (pos_t - prev_pos).norm();
-      if (total_dist >= planning_horizon_)
+      if (total_dist >= horizon)
       {
         local_target_pt_ = pos_t;
         target_t = t;

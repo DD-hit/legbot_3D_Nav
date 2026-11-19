@@ -19,7 +19,12 @@ install(PROGRAMS
   scripts/scan_waypoint_mission
   scripts/stair_cloud_sim
   DESTINATION lib/${PROJECT_NAME})
-install(FILES scripts/map_match_core.py DESTINATION lib/${PROJECT_NAME})
+install(FILES scripts/map_match_core.py scripts/waypoint_tasks.py scripts/navigation_web.py scripts/floor_map.py DESTINATION lib/${PROJECT_NAME})
+set(floor_display "${CMAKE_CURRENT_SOURCE_DIR}/web_maps/building2_9.json")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${floor_display}")
+file(READ "${floor_display}" FLOOR_DISPLAY)
+configure_file(web/index.html "${CMAKE_CURRENT_BINARY_DIR}/web/index.html" @ONLY)
+install(FILES "${CMAKE_CURRENT_BINARY_DIR}/web/index.html" web/console.css web/console.js DESTINATION share/${PROJECT_NAME}/web)
 install(DIRECTORY launch config models worlds rviz DESTINATION share/${PROJECT_NAME}
   PATTERN "__pycache__" EXCLUDE
   PATTERN "*.pyc" EXCLUDE)

@@ -12,6 +12,7 @@ def generate_launch_description():
         DeclareLaunchArgument('crouch_wait_seconds', default_value='3.0'),
         DeclareLaunchArgument('stand_wait_seconds', default_value='5.0'),
         DeclareLaunchArgument('goal_settle_seconds', default_value='1.5'),
+        DeclareLaunchArgument('completion_topic', default_value='/scan/mission_complete'),
         DeclareLaunchArgument('stand_on_plan_loss', default_value='false', choices=['true', 'false']),
         DeclareLaunchArgument('hold_stance_at_goal', default_value='false', choices=['true', 'false']),
         DeclareLaunchArgument('odom_topic', default_value='/fast_lio/odometry_base'),
@@ -20,6 +21,7 @@ def generate_launch_description():
         Node(
             package='legbot_bringup', executable='go2_demo_sequencer',
             name='go2_demo_sequencer', output='screen',
+            remappings=[('/scan/mission_complete', LaunchConfiguration('completion_topic'))],
             parameters=[{
                 'use_sim_time': ParameterValue(LaunchConfiguration('use_sim_time'), value_type=bool),
                 'crouch_wait_seconds': ParameterValue(

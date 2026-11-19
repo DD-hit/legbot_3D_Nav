@@ -24,6 +24,9 @@ def setup(context):
     navigation_source = LaunchConfiguration('navigation_source').perform(context)
     use_ground_truth = navigation_source == 'ground_truth'
     map_localized = navigation_source == 'map_localized'
+    web_console = LaunchConfiguration('web_console').perform(context) == 'true'
+    if web_console and (not map_localized or LaunchConfiguration('initial_z_mode').perform(context) != 'floor'):
+        raise ValueError('web_console requires navigation_source:=map_localized and initial_z_mode:=floor')
     pct_frame = 'map' if map_localized else 'building_pct'
     gui = LaunchConfiguration('gui')
     rviz = LaunchConfiguration('rviz')
@@ -78,6 +81,7 @@ def setup(context):
             'use_sim_time': use_sim_time,
             'initial_z_mode': LaunchConfiguration('initial_z_mode'),
             'floor_height': LaunchConfiguration('floor_height'),
+            **({'xy_radius': '1.0', 'yaw_radius': '30.0'} if web_console else {}),
         }))
 
     # The normal six-terminal workflow starts this coordinator only after all
@@ -92,13 +96,15 @@ def setup(context):
                 'localization_label': localization_label,
                 'stand_on_plan_loss': 'true' if map_localized else 'false',
                 'hold_stance_at_goal': 'true',
+                'completion_topic': '/scan/leg_complete' if web_console else '/scan/mission_complete',
             })]),
         include('legbot_bringup', 'pct_plan.launch.py', {
             'use_sim_time': use_sim_time,
-            'tomogram': 'building2_9',
+            'tomogram': 'building2_9_entry' if web_console else 'building2_9',
             'path_topic': '/pct_path_raw',
             'frame_id': pct_frame,
             'use_localized_start': 'true' if map_localized else 'false',
+            'runtime_goals': 'true' if web_console else 'false',
             'goal_x': LaunchConfiguration('goal_x'),
             'goal_y': LaunchConfiguration('goal_y'),
             'goal_z': LaunchConfiguration('goal_z'),
@@ -115,6 +121,7 @@ def setup(context):
             'manual_goal_use_message_z': 'true',
             'finish_dist': LaunchConfiguration('finish_dist'),
             'goal_settle_time': LaunchConfiguration('goal_settle_time'),
+            'respect_goal_heading': 'true' if web_console else 'false',
             'min_walk_speed': '0.12',
             'goal_min_walk_speed': LaunchConfiguration('goal_min_walk_speed'),
             'odom_topic': odom_topic,
@@ -136,6 +143,8 @@ def setup(context):
                 'frame_id': 'odom',
                 'pct_frame_id': pct_frame,
                 'use_map_localization': map_localized,
+                'web_console': web_console,
+                'web_port': ParameterValue(LaunchConfiguration('web_port'), value_type=int),
                 # Ground-truth odom is the Gazebo world frame, so its map TF
                 # is published immediately below.  FAST-LIO still needs the
                 # mission bridge's start-pose calibration.
@@ -165,6 +174,8 @@ def setup(context):
 def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument('gui', default_value='true', choices=['true', 'false']),
+        DeclareLaunchArgument('web_console', default_value='false', choices=['true', 'false']),
+        DeclareLaunchArgument('web_port', default_value='8765'),
         DeclareLaunchArgument('rviz', default_value='true', choices=['true', 'false']),
         DeclareLaunchArgument('use_sim_time', default_value='true', choices=['true', 'false']),
         DeclareLaunchArgument(

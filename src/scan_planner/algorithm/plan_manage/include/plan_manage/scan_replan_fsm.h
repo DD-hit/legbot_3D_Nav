@@ -58,6 +58,9 @@ namespace scan_planner
     double finish_dist_, finish_dist_z_;
     bool wait_for_goal_ack_{};
     geometry_msgs::msg::PoseStamped reference_goal_;
+    bool respect_goal_heading_ = false;
+    bool check_terminal_turn_ = false;
+    legbot::Publisher turn_clear_pub_;
     std::vector<Eigen::Vector3d> preset_waypoints_;
     int waypoint_num_;
     double planning_horizon_;

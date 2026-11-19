@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="theme-color" content="#f5f6f8" />
+    <title>迹航 · 导航工作台</title>
+    <link rel="stylesheet" href="/console.css" />
+  </head>
+  <body>
+    <header class="mast"><div class="mast-inner">
+      <div class="brand"><i aria-hidden="true"></i><strong>迹航</strong><span>导航工作台</span></div>
+      <div class="mast-actions"><button id="libraryOpen" disabled>点位与路线</button><button id="cancel" hidden>取消任务并停车</button><span id="link" role="status">连接中</span></div>
+    </div></header>
+    <main>
+      <section class="workspace" aria-label="楼层地图">
+        <div class="bar"><div class="map-title"><h1>楼层地图</h1><div class="floor-tools"><select id="floor" aria-label="查看楼层"></select><button id="floorRename" disabled class="subtle" title="编辑当前楼层名称">改名</button></div></div>
+          <div class="map-tools"><button id="follow" aria-pressed="false">跟随机器狗</button><button id="fit">全图</button><label><input id="limits" type="checkbox" />规划限制</label></div>
+        </div>
+        <div class="map"><canvas id="map" aria-label="楼层地图，按住落点并沿期望朝向拖动"></canvas><div class="mapnote" id="mapnote"></div></div>
+        <footer><div class="legend"><span><b class="terrain"></b>楼面</span><span><b class="unknown"></b>无有效楼面</span><span id="structureLegend"><b class="wall"></b>墙体</span><span id="limitLegend" hidden><b class="restricted"></b>规划受限</span><span><b class="robot"></b>机身</span><span><b class="line"></b>路线</span></div><output id="xy">地图坐标 · m</output></footer>
+      </section>
+      <aside>
+        <section class="card"><div class="section-head"><h2>机器狗定位</h2><span id="loc" class="status" role="status">等待状态</span></div><p id="pose" class="detail"></p><button id="seed" disabled>拖动给定初始位姿</button></section>
+        <section class="card" id="taskManager"><h2>导航任务</h2><div class="seg" id="newTask"><button id="single" disabled>新建单点</button><button id="multi" disabled>新建多点</button></div>
+          <div id="editor" hidden><p id="tip" class="detail"></p><ol id="points"></ol><div class="actions"><button id="discard">取消编辑</button><button id="saveDraft">保存</button><button id="start" class="primary">开始导航</button></div></div>
+        </section>
+        <section class="card" id="taskStatus" hidden><h2 id="statusTitle">当前任务</h2><p id="progress" role="status"></p><p id="reason" class="detail"></p><details id="taskDetails"><summary>停靠明细</summary><ol id="executing"></ol></details><div class="actions"><button id="saveTask">保存到资料库</button><button id="resume" hidden>编辑剩余点</button></div></section>
+        <p id="notice" role="status"></p>
+      </aside>
+    </main>
+    <dialog id="library" aria-labelledby="libraryTitle"><div class="section-head"><h2 id="libraryTitle">点位与路线</h2><button id="libraryClose">关闭</button></div><div class="tabs"><button id="placesTab" aria-pressed="true">常用点位</button><button id="routesTab" aria-pressed="false">巡检路线</button></div><ol id="savedList"></ol><p id="libraryEmpty" class="detail"></p><button id="libraryNew">新建点位</button><p class="detail">保存在当前浏览器中</p></dialog>
+    <dialog id="recordDialog" aria-labelledby="recordTitle"><form id="recordForm"><h2 id="recordTitle"></h2><label id="nameLabel">名称<input id="recordName" maxlength="40" autocomplete="off" required /></label><p id="recordDetail" class="detail"></p><div class="actions"><button type="button" id="recordCancel">取消</button><button type="submit" class="primary" id="recordConfirm">保存</button></div></form></dialog>
+    <dialog id="stairPicker" aria-labelledby="stairTitle"><h2 id="stairTitle">选择楼段</h2><p class="detail" id="stairPosition"></p><div id="stairOptions"></div><form method="dialog"><button autofocus>取消本次选点</button></form></dialog>
+    <script id="structureData" type="application/json">@FLOOR_DISPLAY@</script>
+    <script type="module" src="/console.js"></script>
+  </body>
+</html>
