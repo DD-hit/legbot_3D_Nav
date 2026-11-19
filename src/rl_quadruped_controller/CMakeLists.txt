@@ -103,6 +103,9 @@ ament_export_dependencies(${dependencies})
 ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
 
 if (BUILD_TESTING)
+    add_executable(goal_balance_command_check test/goal_balance_command_check.cpp)
+    target_include_directories(goal_balance_command_check PRIVATE include)
+    add_test(NAME goal_balance_command_check COMMAND goal_balance_command_check)
     find_package(ament_lint_auto REQUIRED)
     # the following line skips the linter which checks for copyrights
     # comment the line when a copyright and license is added to all source files

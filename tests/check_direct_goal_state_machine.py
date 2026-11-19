@@ -113,4 +113,17 @@ sequencer_module.time.monotonic = lambda: 1.0
 sequencer.tick()
 assert sequencer.state == 'stop_pulse'
 
+issued_modes = []
+sequencer.publish_mode = issued_modes.append
+sequencer.pulse_seconds = 2.
+for completed, hold_stance, expected_mode in ((True, False, 2), (True, True, 4), (False, True, 2)):
+    sequencer.mission_complete = completed
+    sequencer.hold_stance_at_goal = hold_stance
+    sequencer.tick()
+    assert issued_modes[-1] == expected_mode
+sequencer.state = 'rl_pulse'
+sequencer.mission_complete = True
+sequencer.tick()
+assert sequencer.state == 'settling_at_goal'
+
 print('PASS execution stop ack, fixed-stand handoff, stale-plan rejection, and rearm')

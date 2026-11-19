@@ -29,6 +29,9 @@ legbot::Timer cmd_timer;
 bool receive_traj = false;
 bool have_odom = false;
 legbot::Time last_odom_time;
+legbot::Time last_odom_stamp;
+legbot::Time goal_settle_start;
+Eigen::Vector2d goal_settle_position = Eigen::Vector2d::Zero();
 std::vector<UniformBspline> traj;
 double traj_duration = 0.0;
 double last_nearest_time = 0.0;
@@ -38,7 +41,6 @@ legbot::Time latest_traj_start;
 bool have_goal_time = false;
 bool have_goal_position = false;
 bool goal_stop_latched = false;
-bool goal_ack_sent = false;
 geometry_msgs::msg::PoseStamped latest_goal_msg;
 Eigen::Vector3d latest_goal_pos = Eigen::Vector3d::Zero();
 
@@ -55,6 +57,9 @@ double max_vy;
 double max_vyaw;
 double finish_dist;
 double finish_dist_z;
+double goal_capture_dist;
+double goal_settle_time;
+double goal_settle_max_drift;
 bool use_goal_z;
 double tracking_z_weight;
 bool steer_with_position_error;
@@ -64,6 +69,7 @@ double slope_down_threshold;
 double stair_speed_scale;
 double min_stair_speed;
 double min_walk_speed;
+double goal_min_walk_speed;
 double goal_slowdown_distance;
 double turn_slowdown_angle;
 double min_turn_speed_scale;
@@ -109,6 +115,9 @@ void loadParams(const legbot::NodeHandle &nh)
   nh.param("max_vyaw", max_vyaw, 1.00);
   nh.param("finish_dist", finish_dist, 0.25);
   nh.param("finish_dist_z", finish_dist_z, 0.20);
+  nh.param("goal_settle_time", goal_settle_time, 0.0);
+  nh.param("goal_settle_max_drift", goal_settle_max_drift, 0.025);
+  goal_capture_dist = goal_settle_time > 0.0 ? 0.6 * finish_dist : finish_dist;
   nh.param("use_goal_z", use_goal_z, false);
   // A local B-spline spans only one short, monotonic route segment.  Its
   // nearest-point tracker must not inherit the large Z weight used by the
@@ -122,6 +131,7 @@ void loadParams(const legbot::NodeHandle &nh)
   nh.param("stair_speed_scale", stair_speed_scale, 1.00);
   nh.param("min_stair_speed", min_stair_speed, 0.30);
   nh.param("min_walk_speed", min_walk_speed, 0.0);
+  nh.param("goal_min_walk_speed", goal_min_walk_speed, 0.0);
   nh.param("goal_slowdown_distance", goal_slowdown_distance, 0.80);
   nh.param("turn_slowdown_angle", turn_slowdown_angle, 0.30);
   nh.param("min_turn_speed_scale", min_turn_speed_scale, 0.30);
@@ -238,7 +248,7 @@ void goalCallback(const geometry_msgs::msg::PoseStamped::ConstSharedPtr &msg)
   latest_goal_pos << msg->pose.position.x, msg->pose.position.y, msg->pose.position.z;
   have_goal_position = latest_goal_pos.allFinite();
   goal_stop_latched = false;
-  goal_ack_sent = false;
+  goal_settle_start = legbot::Time();
   latest_goal_msg = *msg;
   // A new point can be almost exactly behind the robot. Do not carry the
   // preceding goal's rotate hysteresis/direction into that U-turn.
@@ -294,6 +304,15 @@ void bsplineCallback(const scan_planner::msg::Bspline::ConstSharedPtr &msg)
     pos_pts(2, i) = msg->pos_pts[i].z;
   }
 
+  if ((pos_pts.colwise() - pos_pts.col(0)).isZero(1e-8))
+  {
+    latest_traj_start = candidate_start;
+    receive_traj = false;
+    publishExecutionFrozen(false);
+    publishStop();
+    return;
+  }
+
   UniformBspline pos_traj(pos_pts, msg->order, 0.1);
   pos_traj.setKnot(knots);
 
@@ -311,6 +330,16 @@ void bsplineCallback(const scan_planner::msg::Bspline::ConstSharedPtr &msg)
   ROS_INFO("[scan_go2_cmd_adapter] receive traj %d duration %.3fs", traj_id, traj_duration);
 }
 
+bool onGoalFloor(double height)
+{
+  return !use_goal_z || std::abs(latest_goal_pos.z() - height) <= finish_dist_z;
+}
+
+bool insideGoal(double xy_distance, double radius)
+{
+  return xy_distance <= radius && onGoalFloor(odom_pos.z());
+}
+
 void odomCallback(const nav_msgs::msg::Odometry::ConstSharedPtr &msg)
 {
   const auto &p = msg->pose.pose.position;
@@ -323,19 +352,48 @@ void odomCallback(const nav_msgs::msg::Odometry::ConstSharedPtr &msg)
     ROS_WARN_THROTTLE(1.0, "[scan_go2_cmd_adapter] Reject invalid odometry sample.");
     return;
   }
+  const legbot::Time now = legbot::Time::now();
+  const legbot::Time stamp(msg->header.stamp);
+  if (goal_settle_time > 0.0)
+  {
+    if (now < last_odom_time)
+    {
+      last_odom_stamp = legbot::Time();
+      goal_settle_start = legbot::Time();
+    }
+    if (stamp <= last_odom_stamp || std::abs((now - stamp).toSec()) > odom_timeout)
+      return;
+    if ((stamp - last_odom_stamp).toSec() > odom_timeout || (now - last_odom_time).toSec() > odom_timeout)
+      goal_settle_start = legbot::Time();
+    last_odom_stamp = stamp;
+  }
   odom_pos(0) = msg->pose.pose.position.x;
   odom_pos(1) = msg->pose.pose.position.y;
   odom_pos(2) = msg->pose.pose.position.z;
   odom_yaw = legbot_tf::getYaw(msg->pose.pose.orientation);
   have_odom = true;
-  last_odom_time = legbot::Time::now();
+  last_odom_time = now;
+  if (goal_settle_time > 0.0 && have_goal_position && !goal_stop_latched && stamp >= latest_goal_time)
+  {
+    const double radius = goal_settle_start.isZero() ? goal_capture_dist : finish_dist;
+    if (!insideGoal((latest_goal_pos.head<2>() - odom_pos.head<2>()).norm(), radius))
+      goal_settle_start = legbot::Time();
+    else if (goal_settle_start.isZero() ||
+             (odom_pos.head<2>() - goal_settle_position).norm() > goal_settle_max_drift)
+    {
+      goal_settle_start = stamp;
+      goal_settle_position = odom_pos.head<2>();
+    }
+  }
 }
 
 void cmdCallback(const legbot::TimerEvent &)
 {
-  if (!have_odom ||
-      (legbot::Time::now() - last_odom_time).toSec() > odom_timeout)
+  const legbot::Time now = legbot::Time::now();
+  if (!have_odom || (now - last_odom_time).toSec() > odom_timeout ||
+      (goal_settle_time > 0.0 && std::abs((now - last_odom_stamp).toSec()) > odom_timeout))
   {
+    goal_settle_start = legbot::Time();
     publishExecutionFrozen(false);
     publishStop();
     return;
@@ -352,28 +410,28 @@ void cmdCallback(const legbot::TimerEvent &)
     goal_xy_distance = (latest_goal_pos.head<2>() - odom_pos.head<2>()).norm();
     // XY decides arrival. Optional Z is a broad same-floor gate, not a
     // precision height target.
-    const bool inside_goal =
-        goal_xy_distance <= finish_dist &&
-        (!use_goal_z || std::abs(latest_goal_pos.z() - odom_pos.z()) <= finish_dist_z);
-    if (inside_goal && !goal_stop_latched)
-      ROS_INFO("[scan_go2_cmd_adapter] final goal reached; latching zero velocity until the next goal.");
-    goal_stop_latched = goal_stop_latched || inside_goal;
-    if (goal_stop_latched)
+    const bool holding = goal_settle_time > 0.0 ? !goal_settle_start.isZero() :
+                         insideGoal(goal_xy_distance, finish_dist);
+    if (goal_stop_latched || holding)
     {
-      publishExecutionFrozen(false);
-      publishStop();
       // A zero cmd_vel is not mission completion: the RL controller remains in
       // walking mode until the waypoint coordinator hears an explicit arrival.
       // Echo the exact goal stamp so an old acknowledgment cannot finish a
       // newer RViz or queued goal.
-      if (!goal_ack_sent)
+      const bool settled = goal_settle_time <= 0.0 ||
+          (!goal_settle_start.isZero() && (last_odom_stamp - goal_settle_start).toSec() >= goal_settle_time);
+      publishExecutionFrozen(!goal_stop_latched && !settled);
+      publishStop();
+      if (!goal_stop_latched && settled)
       {
         geometry_msgs::msg::PoseStamped ack = latest_goal_msg;
         ack.pose.position.x = odom_pos.x();
         ack.pose.position.y = odom_pos.y();
         ack.pose.position.z = odom_pos.z();
         goal_stop_ack_pub.publish(ack);
-        goal_ack_sent = true;
+        goal_stop_latched = true;
+        ROS_INFO("[scan_go2_cmd_adapter] final goal reached: XY error %.3f m, hold %.2f s.",
+                 goal_xy_distance, goal_settle_time);
       }
       return;
     }
@@ -397,7 +455,9 @@ void cmdCallback(const legbot::TimerEvent &)
 
   const bool near_traj_end = t_near >= traj_duration - 0.05;
   const Eigen::Vector3d end_pt = traj[0].evaluateDeBoorT(traj_duration);
-  const bool reached_end =
+  const bool final_spline = goal_settle_time > 0.0 && have_goal_position && onGoalFloor(end_pt.z()) &&
+      (end_pt.head<2>() - latest_goal_pos.head<2>()).norm() <= goal_capture_dist;
+  const bool reached_end = final_spline ? insideGoal(goal_xy_distance, goal_capture_dist) :
       (end_pt.head<2>() - odom_pos.head<2>()).norm() <= finish_dist &&
       (!use_goal_z || std::abs(end_pt.z() - odom_pos.z()) <= finish_dist_z);
 
@@ -438,13 +498,17 @@ void cmdCallback(const legbot::TimerEvent &)
   // the policy does not step, and the requested speed never ramps up. Apply a
   // configurable launch speed while the endpoint remains outside its finish
   // tolerance. The normal reached_end branch above still publishes zero.
-  const double effective_min_walk_speed = std::min(std::max(min_walk_speed, 0.0), max_vx);
+  const bool terminal_approach = have_goal_position &&
+      goal_xy_distance <= std::max(finish_dist, goal_slowdown_distance) &&
+      (goal_settle_time <= 0.0 || onGoalFloor(odom_pos.z()));
+  const bool precise_approach = final_spline && terminal_approach;
+  const double minimum_speed = precise_approach ? std::max(min_walk_speed, goal_min_walk_speed) : min_walk_speed;
+  const double effective_min_walk_speed = clamp(minimum_speed, 0.0, max_vx);
   const double walk_speed = vel_world.norm();
-  const bool terminal_approach =
-      have_goal_position && goal_xy_distance <= std::max(finish_dist, goal_slowdown_distance);
+  const double velocity_epsilon = final_spline ? 1e-6 : 0.005;
   const bool needs_minimum_speed =
       !reached_end && effective_min_walk_speed > 0.0 &&
-      walk_speed > 0.005 && walk_speed < effective_min_walk_speed;
+      walk_speed > velocity_epsilon && walk_speed < effective_min_walk_speed;
   if (needs_minimum_speed)
     vel_world *= effective_min_walk_speed / walk_speed;
 
@@ -459,11 +523,11 @@ void cmdCallback(const legbot::TimerEvent &)
   // makes the result independent of the locomotion policy's small-command
   // dead zone because the goal latch above owns the final zero command.
   double terminal_scale = 1.0;
-  if (terminal_approach && goal_slowdown_distance > finish_dist + 1e-3)
+  if (terminal_approach && goal_slowdown_distance > goal_capture_dist + 1e-3)
   {
     terminal_scale = clamp(
-        (goal_xy_distance - finish_dist) /
-            (goal_slowdown_distance - finish_dist),
+        (goal_xy_distance - goal_capture_dist) /
+            (goal_slowdown_distance - goal_capture_dist),
         0.0, 1.0);
     vel_world = clampNorm(vel_world, std::max(max_vx * terminal_scale, effective_min_walk_speed));
   }
@@ -531,11 +595,12 @@ void cmdCallback(const legbot::TimerEvent &)
   // A quadruped loses stability when a large translational command is mixed
   // with a sharp heading correction. Reduce translation continuously before
   // the rotate-in-place threshold rather than switching abruptly at it.
+  const double turning_error = precise_approach ? abs_yaw_error * terminal_yaw_scale : abs_yaw_error;
   if (heading_error_threshold > turn_slowdown_angle &&
-      abs_yaw_error > turn_slowdown_angle)
+      turning_error > turn_slowdown_angle)
   {
     const double ratio = clamp(
-        (heading_error_threshold - abs_yaw_error) /
+        (heading_error_threshold - turning_error) /
             (heading_error_threshold - turn_slowdown_angle),
         0.0, 1.0);
     const double scale = min_turn_speed_scale + (1.0 - min_turn_speed_scale) * ratio;

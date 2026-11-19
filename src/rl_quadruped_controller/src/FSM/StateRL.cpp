@@ -142,9 +142,7 @@ void StateRL::enter()
     output_dof_pos_ = params_.default_dof_pos;
 
     // Init control
-    control_.x = 0.0;
-    control_.y = 0.0;
-    control_.yaw = 0.0;
+    control_ = {};
 
     // history
     if (history_obs_buf_) {
@@ -427,9 +425,12 @@ void StateRL::getState()
         robot_state_.motor_state.tauEst[i] = controller_common::state_value(ctrl_interfaces_.joint_effort_state_interface_[i].get());
     }
 
-    control_.x = ctrl_interfaces_.control_inputs_.ly;
-    control_.y = -ctrl_interfaces_.control_inputs_.lx;
-    control_.yaw = -ctrl_interfaces_.control_inputs_.rx;
+    const auto& input = ctrl_interfaces_.control_inputs_;
+    if (control_.update(input.command, input.ly, -input.lx, -input.rx)) {
+        RCLCPP_INFO(node_->get_logger(), "%s", control_.goal_balance_hold
+            ? "Goal balance hold active: zero velocity commands, live policy feedback"
+            : "Goal balance hold released: locomotion enabled");
+    }
 
     updated_ = true;
 }

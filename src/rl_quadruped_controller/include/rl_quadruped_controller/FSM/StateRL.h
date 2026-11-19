@@ -6,6 +6,7 @@
 #define STATERL_H
 
 #include <common/ObservationBuffer.h>
+#include <rl_quadruped_controller/control/PolicyCommand.h>
 #include <rl_quadruped_controller/control/CtrlComponent.h>
 #include <torch/script.h>
 #include <onnxruntime_cxx_api.h>
@@ -80,13 +81,6 @@ struct RobotState
         std::vector<T> tauEst = std::vector<T>(32, 0.0);
         std::vector<T> cur = std::vector<T>(32, 0.0);
     } motor_state;
-};
-
-struct Control
-{
-    double x = 0.0;
-    double y = 0.0;
-    double yaw = 0.0;
 };
 
 struct ModelParams
@@ -179,7 +173,7 @@ private:
     // Parameters
     ModelParams params_;
     Observations obs_;
-    Control control_;
+    PolicyCommand control_;
     double init_pos_[12] = {};
 
     RobotState<double> robot_state_;

@@ -13,12 +13,24 @@ from planner_wrapper import TomogramPlanner
 
 planner = TomogramPlanner(Config())
 planner.loadTomogram('building2_9')
-route = planner.plan(
-    np.array([-5.5, 6.0, 0.5], dtype=np.float32),
-    np.array([2.0, -3.0, 4.5], dtype=np.float32))
+start = np.array([-5.5, 6.0, 0.5], dtype=np.float32)
+goal = np.array([2.0, -3.0, 4.5], dtype=np.float32)
+route = planner.plan(start, goal)
 assert route is not None and 20 <= len(route) <= 200
-assert np.linalg.norm(route[0, :2] - [-5.5, 6.0]) < 0.2
-assert np.linalg.norm(route[-1, :2] - [2.0, -3.0]) < 0.2
+assert np.linalg.norm(route[0, :2] - start[:2]) < 0.2
+assert np.array_equal(route[-1, :2], goal[:2])
 assert route[-1, 2] - route[0, 2] > 3.5
-print(f'PASS PCT native imports and {len(route)}-point cross-floor route, '
+assert np.array_equal(planner.pos2idx(route[-2, :2]), planner.pos2idx(goal[:2]))
+assert route[-2, 2] == route[-1, 2]
+
+center = np.array([*route[-2, :2], goal[2]])
+center_route = planner.plan(start, center)
+assert len(center_route) == len(route) - 1 and np.array_equal(center_route, route[:-1])
+stationary = planner.plan(center, goal, allow_stationary=True)
+assert np.array_equal(stationary[-1], route[-1])
+assert planner.plan(start, np.array([*goal[:2], 100.0])) is None
+assert planner.plan(start, np.array([100.0, 100.0, 0.0])) is None
+assert planner.plan(start, np.array([0.0, 0.0, 0.06])) is None
+assert np.array_equal(planner.plan(start, goal), route)
+print(f'PASS PCT native imports and {len(route)}-point cross-floor route with exact goal XY, '
       f'Open3D {open3d.__version__}, CuPy {cupy.__version__}')

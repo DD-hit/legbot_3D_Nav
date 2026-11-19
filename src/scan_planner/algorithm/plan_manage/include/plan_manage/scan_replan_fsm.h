@@ -56,6 +56,8 @@ namespace scan_planner
     int navi_mode_; // 1 manual select, 2 hard code
     double no_replan_thresh_, replan_thresh_;
     double finish_dist_, finish_dist_z_;
+    bool wait_for_goal_ack_{};
+    geometry_msgs::msg::PoseStamped reference_goal_;
     std::vector<Eigen::Vector3d> preset_waypoints_;
     int waypoint_num_;
     double planning_horizon_;
@@ -103,7 +105,7 @@ namespace scan_planner
     /* ROS utils */
     legbot::NodeHandle node_;
     legbot::Timer exec_timer_, safety_timer_;
-    legbot::Subscriber goal_sub_, odom_sub_, path_sub_, go2_execution_frozen_sub_;
+    legbot::Subscriber goal_sub_, odom_sub_, path_sub_, go2_execution_frozen_sub_, goal_ack_sub_;
     legbot::Publisher replan_pub_, new_pub_, bspline_pub_, data_disp_pub_, self_inflation_pub_;
 
     /* helper functions */
@@ -141,6 +143,7 @@ namespace scan_planner
   void pathCallback(const nav_msgs::msg::Path::ConstSharedPtr &msg);
     void odometryCallback(const nav_msgs::msg::Odometry::ConstSharedPtr &msg);
     void go2ExecutionFrozenCallback(const std_msgs::msg::Bool::ConstSharedPtr &msg);
+    void goalAckCallback(const geometry_msgs::msg::PoseStamped::ConstSharedPtr &msg);
 
     bool checkCollision();
 

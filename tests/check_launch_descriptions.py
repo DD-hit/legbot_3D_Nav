@@ -3,7 +3,7 @@ import importlib.util
 import sys
 from pathlib import Path
 from launch import LaunchContext
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch_ros.actions import Node
 from launch_ros.utilities import evaluate_parameters
 
@@ -91,8 +91,10 @@ for path in sorted(Path('src/legbot_bringup/launch').glob('*.launch.py')):
         assert context.launch_configurations['kp_yaw'] == '1.20'
         assert context.launch_configurations['steer_with_position_error'] == 'false'
         assert context.launch_configurations['min_walk_speed'] == '0.0'
+        assert context.launch_configurations['goal_min_walk_speed'] == '0.0'
         assert context.launch_configurations['goal_slowdown_distance'] == '0.80'
         assert context.launch_configurations['finish_dist'] == '0.40'
+        assert context.launch_configurations['goal_settle_time'] == '0.0'
         assert context.launch_configurations['finish_dist_z'] == '1.5'
         assert context.launch_configurations['robot_radius'] == '0.20'
         assert context.launch_configurations['robot_half_length'] == '0.07'
@@ -123,6 +125,7 @@ for path in sorted(Path('src/legbot_bringup/launch').glob('*.launch.py')):
         assert context.launch_configurations['cloud_topic'] == '/fast_lio/cloud_registered'
         assert context.launch_configurations['localization_label'] == 'FAST-LIO'
         assert context.launch_configurations['goal_settle_seconds'] == '1.5'
+        assert context.launch_configurations['hold_stance_at_goal'] == 'false'
     if path.name == 'scan_keypoint_recorder.launch.py':
         assert context.launch_configurations['odom_topic'] == '/fast_lio/odometry_base'
         assert context.launch_configurations['route_topic'] == '/scan/recorded_keypoints'
@@ -148,7 +151,15 @@ for path in sorted(Path('src/legbot_bringup/launch').glob('*.launch.py')):
         source = path.read_text()
         assert "'config': rviz_config" in source
         assert "'scan_stairs_demo.rviz'" in source
-        assert "'finish_dist': '0.50'" in source
+        scan_arguments = next(dict(action.launch_arguments) for action in actions
+                              if isinstance(action, IncludeLaunchDescription)
+                              and 'navi_mode' in dict(action.launch_arguments))
+        assert float(scan_arguments['finish_dist'].perform(context)) == 0.07
+        assert float(scan_arguments['goal_settle_time'].perform(context)) == 0.6
+        assert float(scan_arguments['goal_min_walk_speed'].perform(context)) == 0.2
+        context.launch_configurations.update(finish_dist='0.12', goal_settle_time='1.0')
+        assert float(scan_arguments['finish_dist'].perform(context)) == 0.12
+        assert float(scan_arguments['goal_settle_time'].perform(context)) == 1.0
         assert "'frame_id': 'odom'" in source
         rviz_source = Path('src/legbot_bringup/rviz/scan_stairs_demo.rviz').read_text()
         assert 'Description Source: Topic' in rviz_source

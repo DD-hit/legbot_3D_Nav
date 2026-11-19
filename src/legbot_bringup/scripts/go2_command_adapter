@@ -98,7 +98,7 @@ class CommandAdapter(Node):
         self.last_velocity = time.monotonic()
 
     def control_mode(self, msg):
-        if msg.data in (1, 2, 3):
+        if msg.data in (1, 2, 3, 4):
             self.mode = msg.data
             self.last_mode = time.monotonic()
 

@@ -27,6 +27,7 @@ class DemoSequencer(Node):
         self.goal_settle_seconds = max(
             0.0, float(self.declare_parameter('goal_settle_seconds', 1.5).value))
         self.stand_on_plan_loss = self.declare_parameter('stand_on_plan_loss', False).value
+        self.hold_stance_at_goal = self.declare_parameter('hold_stance_at_goal', False).value
         self.odom_topic = str(self.declare_parameter(
             'odom_topic', '/fast_lio/odometry_base').value)
         self.cloud_topic = str(self.declare_parameter(
@@ -162,7 +163,7 @@ class DemoSequencer(Node):
                 self.enter('rl_pulse')
         elif self.state == 'rl_pulse':
             if self.mission_complete:
-                self.enter('stop_pulse')
+                self.enter('settling_at_goal' if self.hold_stance_at_goal else 'stop_pulse')
                 return
             self.publish_mode(3)
             if elapsed >= self.pulse_seconds:
@@ -174,15 +175,16 @@ class DemoSequencer(Node):
             # immediate mode switch makes the body visibly rock once for gait
             # arrest and again for stand-pose interpolation.
             self.get_logger().info(
-                'Waypoint mission complete: holding zero command for %.2fs before fixed stand' %
+                'Waypoint mission complete: holding zero command for %.2fs' %
                 self.goal_settle_seconds)
             self.enter('settling_at_goal')
         elif self.state == 'settling_at_goal':
             if elapsed >= self.goal_settle_seconds:
-                self.get_logger().info('Goal gait settled: returning to fixed stand')
+                self.get_logger().info('Goal gait settled: requesting balance hold' if self.hold_stance_at_goal
+                                       else 'Goal gait settled: returning to fixed stand')
                 self.enter('stop_pulse')
         elif self.state == 'stop_pulse':
-            self.publish_mode(2)
+            self.publish_mode(4 if self.mission_complete and self.hold_stance_at_goal else 2)
             if elapsed >= self.pulse_seconds:
                 if self.mission_complete:
                     self.enter('complete')

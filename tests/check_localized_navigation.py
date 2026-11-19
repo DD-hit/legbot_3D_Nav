@@ -95,6 +95,10 @@ def run():
         mission.on_plan(spline)
         assert not mission.plan_accepted
         spline.start_time = mission.goal_pub.publish.call_args.args[0].header.stamp
+        spline.pos_pts = [Point(), Point()]
+        mission.on_plan(spline)
+        assert not mission.plan_accepted
+        spline.pos_pts = [Point(), Point(x=0.04)]
         mission.on_plan(spline)
         assert mission.plan_accepted
         permit = mission.permit_pub.publish.call_args.args[0]
@@ -129,6 +133,11 @@ def run():
         final_goal = mission.goal_pub.publish.call_args.args[0]
         mission.on_stop_ack(final_goal)
         assert mission.completed and not mission.permit_pub.publish.call_args.args[0].frame_id
+        adapter.on_permit(mission.permit_pub.publish.call_args.args[0])
+        adapter.control_mode(Int32(data=4))
+        adapter.publish()
+        held = adapter.pub.publish.call_args.args[0]
+        assert held.command == 4 and (held.ly, held.lx, held.rx) == (0., 0., 0.)
         print('PASS corrected map start, stale TF/path/spline rejection, route conversion, stop, replan, command gate')
     finally:
         adapter.destroy_node()

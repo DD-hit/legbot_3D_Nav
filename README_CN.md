@@ -177,9 +177,9 @@ ros2 launch legbot_bringup scan_waypoints.launch.py
 ros2 launch legbot_bringup pct_cross_floor_demo.launch.py
 ```
 
-该长距离跨层演示默认用 Gazebo 真值里程计消除仿真 FAST-LIO 的累计高度漂移；PCT 的
-105 点跨层全局路线、SCAN 局部避障和 GO2 控制链保持不变。需要专门测试定位集成时可加
-`navigation_source:=fastlio`。RViz 会自动使用楼梯场景配置打开。
+该演示默认使用 Gazebo 真值里程计。可用 `navigation_source:=fastlio` 测试激光惯性里程计，或用 `navigation_source:=map_localized` 手动给出初始位姿，再用雷达和地图匹配。操作见[多楼层初始定位指南](docs/INITIAL_LOCALIZATION_CN.md)。
+
+`PCT` 按目标 `z` 选层，确认目标栅格可达后，路线末点保留用户给出的 `x、y`，高度采用该层的机身规划高度。跨层任务默认在机身估计水平误差进入 `4.2 cm` 时制动，在同一楼层的 `7 cm` 范围内站稳 `0.60 s` 后确认到点。
 
 ## 策略配置
 

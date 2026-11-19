@@ -13,6 +13,7 @@ def generate_launch_description():
         DeclareLaunchArgument('stand_wait_seconds', default_value='5.0'),
         DeclareLaunchArgument('goal_settle_seconds', default_value='1.5'),
         DeclareLaunchArgument('stand_on_plan_loss', default_value='false', choices=['true', 'false']),
+        DeclareLaunchArgument('hold_stance_at_goal', default_value='false', choices=['true', 'false']),
         DeclareLaunchArgument('odom_topic', default_value='/fast_lio/odometry_base'),
         DeclareLaunchArgument('cloud_topic', default_value='/fast_lio/cloud_registered'),
         DeclareLaunchArgument('localization_label', default_value='FAST-LIO'),
@@ -28,6 +29,7 @@ def generate_launch_description():
                 'goal_settle_seconds': ParameterValue(
                     LaunchConfiguration('goal_settle_seconds'), value_type=float),
                 'stand_on_plan_loss': ParameterValue(LaunchConfiguration('stand_on_plan_loss'), value_type=bool),
+                'hold_stance_at_goal': ParameterValue(LaunchConfiguration('hold_stance_at_goal'), value_type=bool),
                 'odom_topic': ParameterValue(
                     LaunchConfiguration('odom_topic'), value_type=str),
                 'cloud_topic': ParameterValue(

@@ -32,9 +32,11 @@ def generate_launch_description():
     # Leave policy dead-zone compensation disabled by default.  It must be
     # measured for each replacement policy before it is enabled.
     actions.append(DeclareLaunchArgument('min_walk_speed', default_value='0.0'))
+    actions.append(DeclareLaunchArgument('goal_min_walk_speed', default_value='0.0'))
     actions.append(DeclareLaunchArgument('goal_slowdown_distance', default_value='0.80'))
     actions.append(DeclareLaunchArgument('max_acc', default_value='0.30'))
     actions.append(DeclareLaunchArgument('finish_dist', default_value='0.40'))
+    actions.append(DeclareLaunchArgument('goal_settle_time', default_value='0.0'))
     actions.append(DeclareLaunchArgument(
         'finish_dist_z', default_value='1.5',
         description='Same-floor Z tolerance; waypoint arrival itself is decided in XY'))
@@ -88,6 +90,7 @@ def generate_launch_description():
             'fsm.manual_goal_use_message_z': ParameterValue(LaunchConfiguration('manual_goal_use_message_z'), value_type=bool),
             'fsm.odom_twist_in_body_frame': ParameterValue(LaunchConfiguration('odom_twist_in_body_frame'), value_type=bool),
             'fsm.finish_dist': ParameterValue(LaunchConfiguration('finish_dist'), value_type=float),
+            'fsm.goal_settle_time': ParameterValue(LaunchConfiguration('goal_settle_time'), value_type=float),
             'fsm.finish_dist_z': ParameterValue(LaunchConfiguration('finish_dist_z'), value_type=float),
         }], remappings=[
             ('/scan_planner_node/optimal_list', '/local_planner/optimal_path'),
@@ -122,12 +125,14 @@ def generate_launch_description():
             'steer_with_position_error': ParameterValue(LaunchConfiguration('steer_with_position_error'), value_type=bool),
             'min_stair_speed': ParameterValue(LaunchConfiguration('min_stair_speed'), value_type=float),
             'min_walk_speed': ParameterValue(LaunchConfiguration('min_walk_speed'), value_type=float),
+            'goal_min_walk_speed': ParameterValue(LaunchConfiguration('goal_min_walk_speed'), value_type=float),
             'goal_slowdown_distance': ParameterValue(LaunchConfiguration('goal_slowdown_distance'), value_type=float),
             'turn_slowdown_angle': ParameterValue(LaunchConfiguration('turn_slowdown_angle'), value_type=float),
             'min_turn_speed_scale': ParameterValue(LaunchConfiguration('min_turn_speed_scale'), value_type=float),
             'cmd_accel_limit': ParameterValue(LaunchConfiguration('cmd_accel_limit'), value_type=float),
             'cmd_yaw_accel_limit': ParameterValue(LaunchConfiguration('cmd_yaw_accel_limit'), value_type=float),
             'finish_dist': ParameterValue(LaunchConfiguration('finish_dist'), value_type=float),
+            'goal_settle_time': ParameterValue(LaunchConfiguration('goal_settle_time'), value_type=float),
             'finish_dist_z': ParameterValue(LaunchConfiguration('finish_dist_z'), value_type=float),
             'use_goal_z': ParameterValue(LaunchConfiguration('manual_goal_use_message_z'), value_type=bool),
             'use_sim_time': ParameterValue(LaunchConfiguration('use_sim_time'), value_type=bool),

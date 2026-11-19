@@ -3,7 +3,7 @@ import sys
 import pickle
 from pathlib import Path
 import numpy as np
-from scipy.interpolate import griddata  # 新增：用于XY坐标的高度插值
+from scipy.interpolate import griddata
 
 from utils import *
 
@@ -14,6 +14,8 @@ rsg_root = os.path.dirname(os.path.abspath(__file__)) + '/../..'
 
 
 class TomogramPlanner(object):
+    ASTAR_COST_THRESHOLD = 20.0
+
     def __init__(self, cfg):
         self.cfg = cfg
 
@@ -115,48 +117,19 @@ class TomogramPlanner(object):
 
         query_height = griddata(valid_xy, valid_elev, (x, y), method='nearest', fill_value=-100.0)
         return float(query_height)
-    
-
-    
 
     def match_best_layer(self, x, y, target_height):
-        """
-        迭代所有layer，找到与目标高度最匹配的layer（核心方法）
-        :param x: 物理X坐标
-        :param y: 物理Y坐标
-        :param target_height: 目标高度（如start_pos/end_pos的z值）
-        :return: 最佳匹配的layer索引、该layer下XY对应的高度、高度差值
-        """
-        min_cost = float('inf')
-        best_layer = 0
-
-        # 迭代所有layer（可优化：先粗筛再细查，减少迭代次数）
-        for layer_idx in range(self.n_slice):
-            # 获取该layer下XY对应的真实高度
-            layer_height = self.get_layer_height_by_xy(layer_idx, x, y)
-            # 跳过无效层
-            if layer_height == -100.0:
-                continue
-            # 计算高度差值（绝对值）
-            diff = abs(layer_height - target_height)
-            if diff > self.slice_dh :  
-                continue
-            # 先将物理XY坐标转换为网格索引（用于查costmap）
-            grid_idx = self.pos2idx(np.array([x, y])).astype(int)
-            height, width = self.tomogram[0][layer_idx].shape
-            # 安全地 clip 行和列索引
-            row = np.clip(grid_idx[1], 0, height - 1)
-            col = np.clip(grid_idx[0], 0, width - 1)
-            # 然后安全访问
-            layer_cost_ = self.tomogram[0][layer_idx][row][col]
-            #去除代价不存在的层级，即没有tomogram分析点云
-            if layer_cost_==0:
-                continue
-            # 更新最佳匹配
-            if layer_cost_ < min_cost:
-                min_cost = layer_cost_
-                best_layer = layer_idx
-        return best_layer
+        """Select the lowest-cost surface at the requested cell and height."""
+        column, row = self.pos2idx(np.array([x, y])).astype(int)
+        if not (0 <= row < self.map_dim[0] and 0 <= column < self.map_dim[1]):
+            return None
+        heights = self.layer_elev_grids[:, row, column]
+        costs = self.tomogram[0, :, row, column]
+        candidates = np.flatnonzero((heights > -99.0) & (np.abs(heights - target_height) <= self.slice_dh)
+                                    & np.isfinite(costs) & (costs > 0.0))
+        if not len(candidates):
+            return None
+        return int(candidates[np.argmin(costs[candidates])])
         
     def initPlanner(self, trav, trav_gx, trav_gy, elev_g, elev_c):
         diff_t = trav[1:] - trav[:-1]
@@ -180,7 +153,7 @@ class TomogramPlanner(object):
             max_heading_rate=self.max_heading_rate, use_quintic=self.use_quintic
         )
         self.planner.init_map(
-            20, 15, self.resolution, self.n_slice, 1,
+            self.ASTAR_COST_THRESHOLD, 15, self.resolution, self.n_slice, 1,
             trav.reshape(-1, trav.shape[-1]).astype(np.double),
             elev_g.reshape(-1, elev_g.shape[-1]).astype(np.double),
             elev_c.reshape(-1, elev_c.shape[-1]).astype(np.double),
@@ -233,48 +206,50 @@ class TomogramPlanner(object):
             self.cfg.planner, 'route_simplify_epsilon', 0.08)))
         return self._simplify_route(route, epsilon)
 
+    def _finish_at_goal(self, route, end_pos):
+        """Extend only within the A*-validated goal cell, at walking-base height."""
+        layer, column, row = self.end_idx
+        goal_z = self.layer_elev_grids[layer, row, column] + 0.5
+        last = route[-1]
+        if (not np.isfinite(last).all() or not np.array_equal(self.pos2idx(last[:2]), self.end_idx[1:])
+                or abs(last[2] - goal_z) > self.resolution):
+            return None
+        if np.linalg.norm(last[:2] - end_pos[:2]) <= 1e-6:
+            last[:2] = end_pos[:2]
+            return route
+        return np.vstack((route, [end_pos[0], end_pos[1], last[2]]))
+
     def plan(self, start_pos, end_pos, optimize=None, allow_stationary=False):
-        # TODO: calculate slice index. By default the start and end pos are all at slice 0
-
-        # print("pos origin start:", start_pos)
-        # print("pos origin end:", end_pos)
-
-        # 匹配起始点的最佳layer
-        start_layer = self.match_best_layer(
-            start_pos[0], start_pos[1], start_pos[2]
-        )
-        # 匹配目标点的最佳layer
-        end_layer= self.match_best_layer(
-            end_pos[0], end_pos[1], end_pos[2]
-        )
-        # print("start_layer:" ,start_layer)
-        # print("end_layer:" ,end_layer)
-        
+        start_layer = self.match_best_layer(*start_pos)
+        end_layer = self.match_best_layer(*end_pos)
+        if start_layer is None or end_layer is None:
+            return None
 
         self.start_idx[1:] = self.pos2idx(start_pos[:2])
         self.end_idx[1:] = self.pos2idx(end_pos[:2])
         self.start_idx[0] = start_layer
         self.end_idx[0] = end_layer
-    
+
+        layer, column, row = self.end_idx
+        if self.tomogram[0, layer, row, column] > self.ASTAR_COST_THRESHOLD:
+            return None
+        if np.array_equal(self.start_idx, self.end_idx):
+            if not allow_stationary or abs(start_pos[2] - end_pos[2]) > 0.5:
+                return None
+            goal_z = self.layer_elev_grids[layer, row, column] + 0.5
+            return np.vstack((start_pos, [end_pos[0], end_pos[1], goal_z]))
 
         if optimize is None:
             optimize = bool(getattr(self.cfg.planner, 'optimize_path', False))
-        same_cell = allow_stationary and np.array_equal(self.start_idx, self.end_idx)
-        if same_cell:
-            optimize = False
         planned = self.planner.plan(self.start_idx, self.end_idx, bool(optimize))
         if not planned:
             return None
-        if same_cell:
-            if abs(start_pos[2] - end_pos[2]) > 0.5:
-                return None
-            return np.stack((start_pos, end_pos))
         path_finder: a_star.Astar = self.planner.get_path_finder()
         path = path_finder.get_result_matrix()
         if len(path) == 0:
             return None
         if not optimize:
-            return self._astar_route_to_map(path)
+            return self._finish_at_goal(self._astar_route_to_map(path), end_pos)
 
         optimizer: traj_opt.GPMPOptimizer = (
             self.planner.get_trajectory_optimizer()

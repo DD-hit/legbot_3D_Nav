@@ -230,7 +230,7 @@ class PctPathMission(Node):
             return
         points = [(point.x, point.y, point.z) for point in msg.pos_pts]
         if (all(math.isfinite(value) for point in points for value in point)
-                and max(math.dist(points[0], point) for point in points) > 0.05):
+                and any(math.dist(points[0][:2], point[:2]) > 1e-3 for point in points)):
             self.plan_accepted = True
             self.publish_permit()
             self.plan_ready_pub.publish(Bool(data=True))
@@ -356,8 +356,7 @@ class PctPathMission(Node):
         if self.use_map_localization:
             self.publish_permit()
         self.complete_pub.publish(Bool(data=True))
-        self.get_logger().info(
-            'PCT cross-floor mission complete; GO2 may return to fixed stand')
+        self.get_logger().info('PCT cross-floor mission complete')
 
 
 def self_test():

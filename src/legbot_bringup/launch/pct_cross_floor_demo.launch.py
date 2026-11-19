@@ -91,6 +91,7 @@ def setup(context):
                 'cloud_topic': cloud_topic,
                 'localization_label': localization_label,
                 'stand_on_plan_loss': 'true' if map_localized else 'false',
+                'hold_stance_at_goal': 'true',
             })]),
         include('legbot_bringup', 'pct_plan.launch.py', {
             'use_sim_time': use_sim_time,
@@ -112,12 +113,10 @@ def setup(context):
             # grid-map and marker headers.
             'frame_id': 'odom',
             'manual_goal_use_message_z': 'true',
-            # The learned gait can settle just outside SCAN's generic 0.40 m
-            # point-goal radius after this long route.  A 0.50 m terminal
-            # radius avoids a zero-speed deadlock while remaining much
-            # smaller than a stair tread/platform transition.
-            'finish_dist': '0.50',
+            'finish_dist': LaunchConfiguration('finish_dist'),
+            'goal_settle_time': LaunchConfiguration('goal_settle_time'),
             'min_walk_speed': '0.12',
+            'goal_min_walk_speed': LaunchConfiguration('goal_min_walk_speed'),
             'odom_topic': odom_topic,
             'cloud_topic': cloud_topic,
             'sensor_pose_topic': sensor_pose_topic,
@@ -180,6 +179,12 @@ def generate_launch_description():
         DeclareLaunchArgument('goal_x', default_value='2.0'),
         DeclareLaunchArgument('goal_y', default_value='-3.0'),
         DeclareLaunchArgument('goal_z', default_value='4.5'),
+        DeclareLaunchArgument('finish_dist', default_value='0.07',
+                              description='Horizontal goal tolerance in metres'),
+        DeclareLaunchArgument('goal_settle_time', default_value='0.60',
+                              description='Seconds of stable odometry inside the goal tolerance'),
+        DeclareLaunchArgument('goal_min_walk_speed', default_value='0.20',
+                              description='Minimum commanded speed on the final approach in metres per second'),
         DeclareLaunchArgument('spawn_x', default_value=PythonExpression([
             "'7.5' if '", LaunchConfiguration('navigation_source'), "' == 'map_localized' else '-27.0'"])),
         DeclareLaunchArgument('spawn_y', default_value='6.0'),

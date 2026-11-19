@@ -29,6 +29,7 @@ namespace scan_planner
     nh.param("fsm/thresh_no_replan", no_replan_thresh_, -1.0);
     nh.param("fsm/finish_dist", finish_dist_, 0.35);
     nh.param("fsm/finish_dist_z", finish_dist_z_, 0.25);
+    wait_for_goal_ack_ = navi_mode_ == NAVI_MODE::REFERENCE_PATH && nh.param("fsm/goal_settle_time", 0.0) > 0.0;
     nh.param("fsm/planning_horizon", planning_horizon_, -1.0);
     nh.param("fsm/emergency_time_", emergency_time_, 1.0);
     nh.param("fsm/fail_safe", enable_fail_safe_, true);
@@ -98,6 +99,8 @@ namespace scan_planner
       path_sub_ = nh.subscribe("/initial_path", 1, &SCANReplanFSM::pathCallback, this);
     else
       cout << "Wrong navi_mode_ value! navi_mode_=" << navi_mode_ << endl;
+    if (wait_for_goal_ack_)
+      goal_ack_sub_ = nh.subscribe("/scan/goal_stop_ack", 10, &SCANReplanFSM::goalAckCallback, this);
   }
 
   void SCANReplanFSM::planGlobalTrajbyGivenWps()
@@ -374,6 +377,8 @@ namespace scan_planner
 
   bool SCANReplanFSM::goalFloorMatches() const
   {
+    if (wait_for_goal_ack_)
+      return std::abs(reference_goal_.pose.position.z - odom_pos_.z()) <= finish_dist_z_;
     // Reaching a waypoint is a horizontal navigation decision. Z is only a
     // coarse floor discriminator for explicit 3D/manual goals and stored
     // multi-floor routes. A normal RViz 2D goal is projected to the current
@@ -472,6 +477,8 @@ namespace scan_planner
       }
     }
 
+    reference_goal_ = msg->poses.back();
+    reference_goal_.header = msg->header;
     end_pt_ = raw_waypoints.back();
     reference_progress_time_ = 0.0;
 
@@ -599,6 +606,16 @@ namespace scan_planner
     go2_execution_frozen_ = msg->data;
   }
 
+  void SCANReplanFSM::goalAckCallback(const geometry_msgs::msg::PoseStamped::ConstSharedPtr &msg)
+  {
+    if (!have_target_ || msg->header != reference_goal_.header)
+      return;
+    callEmergencyStop(odom_pos_);
+    have_target_ = have_new_target_ = trigger_ = false;
+    replan_fail_count_ = 0;
+    changeFSMExecState(WAIT_TARGET, "FSM_GOAL_SETTLED");
+  }
+
   void SCANReplanFSM::updateLocalTrajTimeFreeze()
   {
     const legbot::Time now = legbot::Time::now();
@@ -702,6 +719,9 @@ namespace scan_planner
   {
     updateLocalTrajTimeFreeze();
 
+    if (wait_for_goal_ack_ && have_target_ && go2_execution_frozen_ && referenceGoalReached())
+      return;
+
     static int fsm_num = 0;
     fsm_num++;
     if (fsm_num == 100)
@@ -773,7 +793,7 @@ namespace scan_planner
 
     case REPLAN_TRAJ:
     {
-      if (!isWaypointSequenceMode() && referenceGoalReached())
+      if (!wait_for_goal_ack_ && !isWaypointSequenceMode() && referenceGoalReached())
       {
         callEmergencyStop(odom_pos_);
         replan_fail_count_ = 0;
@@ -829,7 +849,7 @@ namespace scan_planner
 
       Eigen::Vector3d pos = info->position_traj_.evaluateDeBoorT(t_cur);
 
-      if (!isWaypointSequenceMode() && referenceGoalReached())
+      if (!wait_for_goal_ack_ && !isWaypointSequenceMode() && referenceGoalReached())
       {
         callEmergencyStop(odom_pos_);
         replan_fail_count_ = 0;
@@ -1146,8 +1166,11 @@ namespace scan_planner
       return false;
     }
 
-    bool plan_success =
-        planner_manager_->reboundReplan(start_pt_, start_vel_, start_acc_, local_target_pt_, local_target_vel_, (have_new_target_ || flag_use_poly_init), flag_randomPolyTraj);
+    const bool precise_final = navi_mode_ == NAVI_MODE::REFERENCE_PATH && finish_dist_ < 0.2 && goalFloorMatches() &&
+                              (local_target_pt_ - end_pt_).norm() < 1e-3;
+    bool plan_success = planner_manager_->reboundReplan(
+        start_pt_, start_vel_, start_acc_, local_target_pt_, local_target_vel_,
+        have_new_target_ || flag_use_poly_init, flag_randomPolyTraj, precise_final);
     if (plan_success)
       have_new_target_ = false;
 
