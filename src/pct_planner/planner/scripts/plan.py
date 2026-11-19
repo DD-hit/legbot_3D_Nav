@@ -17,7 +17,7 @@ from utils import *
 from planner_wrapper import TomogramPlanner
 
 
-from geometry_msgs.msg import Point
+from geometry_msgs.msg import Point, PoseStamped
 from visualization_msgs.msg import *
 from geometry_msgs.msg import PointStamped
 from interactive_markers.menu_handler import *
@@ -36,6 +36,8 @@ parser.add_argument('--frame-id', default='building_pct')
 parser.add_argument('--optimize', action='store_true',
                     help='Use experimental GPMP optimization instead of the stable PCT A* route')
 args = parser.parse_args(remove_ros_args(sys.argv)[1:])
+use_localized_start = node.declare_parameter('use_localized_start', False).value
+localized_stamp = None
 
 cfg = Config()
 
@@ -162,36 +164,46 @@ def publish_clouds_when_rviz_is_ready():
         'PCT map cloud late-join publish complete: rviz_matched=%s' % rviz_matched)
 
 
-def plan_callback():  # 关键修改：添加event参数接收TimerEvent
-    """定时器回调函数：执行路径规划并发布"""
-    global last_planned_end_pos, last_planned_start_pos,end_pos, start_pos, plan_timer
+def on_localized_start(message):
+    global start_pos, localized_stamp, last_planned_start_pos
+    localized_stamp = None
+    last_planned_start_pos = None
+    if not message.header.frame_id:
+        path_pub.publish(traj2ros([], args.frame_id, message.header.stamp))
+        return
+    position = message.pose.position
+    candidate = np.array([position.x, position.y, position.z], dtype=np.float32)
+    if message.header.frame_id != args.frame_id or not np.isfinite(candidate).all():
+        node.get_logger().error('Rejected localized PCT start: invalid coordinates or frame')
+        return
+    start_pos = candidate
+    localized_stamp = message.header.stamp
+    plan_callback()
 
-    # 检查位置是否发生变化（考虑浮点数精度）
-    position_changed = True
-    if last_planned_start_pos is not None and last_planned_end_pos is not None:
-        if np.linalg.norm(end_pos - last_planned_end_pos) < 0.01 and \
-              np.linalg.norm(start_pos - last_planned_start_pos) < 0.01 :
-            position_changed = False
-    
-    # 只有位置变化时才执行规划
-    if position_changed:
-        try:
-            traj_3d = planner.plan(start_pos, end_pos, optimize=args.optimize)
-            if traj_3d is not None:
-                stamp = node.get_clock().now().to_msg()
-                path_pub.publish(traj2ros(traj_3d, args.frame_id, stamp))
-                print(
-                    f"规划并发布PCT路径: points={len(traj_3d)}, "
-                    f"start_pos={start_pos}, end_pos={end_pos}, "
-                    f"topic={args.path_topic}, frame={args.frame_id}",
-                    flush=True)
-                last_planned_start_pos = start_pos.copy()  # 更新上次规划位置
-                last_planned_end_pos = end_pos.copy()  # 更新上次规划位置
-        except KeyboardInterrupt:
-            print("路径发布失败")
-    
-    # 重新启动定时器（实现周期性检查）
-    # Repeating ROS 2 timer is created once in pct_plan().
+
+def plan_callback():
+    global last_planned_end_pos, last_planned_start_pos
+    if use_localized_start and localized_stamp is None:
+        return
+    if (last_planned_start_pos is not None and last_planned_end_pos is not None
+            and np.linalg.norm(end_pos - last_planned_end_pos) < 0.01
+            and np.linalg.norm(start_pos - last_planned_start_pos) < 0.01):
+        return
+    traj_3d = planner.plan(start_pos, end_pos, optimize=args.optimize, allow_stationary=use_localized_start)
+    if use_localized_start and traj_3d is not None and len(traj_3d) == 1:
+        traj_3d = np.vstack((start_pos, traj_3d))
+    stamp = localized_stamp if use_localized_start else node.get_clock().now().to_msg()
+    if traj_3d is None or len(traj_3d) == 0:
+        if not use_localized_start:
+            return
+        path_pub.publish(traj2ros([], args.frame_id, stamp))
+        node.get_logger().error(f'No PCT route from localized start {start_pos} to {end_pos}')
+    else:
+        path_pub.publish(traj2ros(traj_3d, args.frame_id, stamp))
+        print(f'规划并发布PCT路径: points={len(traj_3d)}, start_pos={start_pos}, '
+              f'end_pos={end_pos}, topic={args.path_topic}, frame={args.frame_id}', flush=True)
+    last_planned_start_pos = start_pos.copy()
+    last_planned_end_pos = end_pos.copy()
 
 
 def processFeedback(feedback):
@@ -331,8 +343,12 @@ def pct_plan():
     # static clouds continuously: doing so steals CPU/DDS bandwidth from SCAN.
     cloud_timer = node.create_timer(0.5, publish_clouds_when_rviz_is_ready)
 
-    make6DofMarker(start_pos,"start_pos", show_6dof=True)
-    make6DofMarker(end_pos, "end_pos",show_6dof=True)
+    if use_localized_start:
+        node.create_subscription(PoseStamped, '/pct/localized_start', on_localized_start, cloud_qos)
+        node.get_logger().info('Waiting for a localized base pose in ' + args.frame_id)
+    else:
+        make6DofMarker(start_pos, "start_pos", show_6dof=True)
+        make6DofMarker(end_pos, "end_pos", show_6dof=True)
     
     # print("初始目标位置", end_pos)
     

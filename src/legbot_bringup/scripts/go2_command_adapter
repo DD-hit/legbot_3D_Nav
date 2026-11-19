@@ -1,5 +1,6 @@
 #!/usr/bin/python3
 """Convert body-frame Twist to upstream GO2 inputs; modes remain explicitly commanded."""
+import json
 import math
 import time
 import rclpy
@@ -10,10 +11,10 @@ except ImportError:  # Jazzy exposes the underlying shutdown error as RuntimeErr
     RCLError = RuntimeError
 from rclpy.node import Node
 from geometry_msgs.msg import Twist
-from std_msgs.msg import Int32
+from std_msgs.msg import Bool, Header, Int32, String
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import PointCloud2
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import DurabilityPolicy, QoSProfile, qos_profile_sensor_data
 from control_input_msgs.msg import Inputs
 
 
@@ -25,6 +26,14 @@ class CommandAdapter(Node):
         self.limits = [self.declare_parameter(k, v).value for k, v in
                        [('max_vx', 0.75), ('max_vy', 0.25), ('max_yaw_rate', 1.0)]]
         self.require_navigation_data = self.declare_parameter('require_navigation_data', True).value
+        self.require_map_localization = self.declare_parameter('require_map_localization', False).value
+        self.fix_stamp_ns = self.permit_stamp_ns = None
+        self.last_ready = self.last_permit = float('-inf')
+        if self.require_map_localization:
+            latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
+            self.create_subscription(Bool, '/localization/ready', self.on_ready, latched)
+            self.create_subscription(String, '/localization/status', self.on_fix, latched)
+            self.create_subscription(Header, '/pct/motion_permit', self.on_permit, latched)
         self.last_odom = self.last_cloud = float('-inf')
         self.odom_topic = self.declare_parameter('odom_topic', '/fast_lio/odometry_base').value
         self.cloud_topic = self.declare_parameter('cloud_topic', '/fast_lio/cloud_registered').value
@@ -57,9 +66,31 @@ class CommandAdapter(Node):
         if msg.header.frame_id and msg.width * msg.height > 0 and msg.data:
             self.last_cloud = time.monotonic()
 
+    def on_ready(self, msg):
+        self.last_ready = time.monotonic() if msg.data else float('-inf')
+        if not msg.data:
+            self.last_velocity = float('-inf')
+
+    def on_fix(self, msg):
+        try:
+            status = json.loads(msg.data)
+            self.fix_stamp_ns = int(status['fix_stamp_ns']) if status['state'] == 'LOCALIZED' else None
+        except (KeyError, ValueError, TypeError):
+            self.fix_stamp_ns = None
+
+    def on_permit(self, msg):
+        self.permit_stamp_ns = msg.stamp.sec * 1_000_000_000 + msg.stamp.nanosec if msg.frame_id else None
+        self.last_permit = time.monotonic()
+
+    def map_permits_motion(self, now):
+        return (not self.require_map_localization or
+                (self.fix_stamp_ns is not None and self.fix_stamp_ns == self.permit_stamp_ns
+                 and now - self.last_ready <= self.navigation_timeout
+                 and now - self.last_permit <= self.navigation_timeout))
+
     def command(self, msg):
         values = [msg.linear.x, msg.linear.y, msg.angular.z]
-        if not all(math.isfinite(v) for v in values):
+        if not self.map_permits_motion(time.monotonic()) or not all(math.isfinite(v) for v in values):
             self.velocity = [0., 0., 0.]
             self.last_velocity = float('-inf')
             return
@@ -85,8 +116,11 @@ class CommandAdapter(Node):
                      now-self.last_cloud <= self.navigation_timeout))
             vx, vy, wz = 0., 0., 0.
         msg = Inputs()
+        map_ready = self.map_permits_motion(now)
+        if not map_ready:
+            vx, vy, wz = 0., 0., 0.
         msg.ly, msg.lx, msg.rx = float(vx), float(-vy), float(-wz)
-        msg.command = self.mode if now-self.last_mode < 0.1 else 0
+        msg.command = self.mode if now-self.last_mode < 0.1 and (self.mode != 3 or map_ready) else 0
         self.pub.publish(msg)
 
 

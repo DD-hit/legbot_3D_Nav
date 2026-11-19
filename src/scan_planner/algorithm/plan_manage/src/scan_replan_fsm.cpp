@@ -40,6 +40,7 @@ namespace scan_planner
     nh.param("grid_map/double_cylinder_offset", self_double_cylinder_offset_, 0.0);
     nh.param("fsm/z_projection_weight", z_projection_weight_, 8.0);
     nh.param("fsm/align_reference_height_to_odom", align_reference_height_to_odom_, true);
+    nh.param("fsm/cancel_on_empty_path", cancel_on_empty_path_, false);
     nh.param("fsm/manual_goal_use_message_z", manual_goal_use_message_z_, false);
     nh.param("fsm/manual_goal_visual_standing_height",
              manual_goal_visual_standing_height_, 0.30);
@@ -420,6 +421,17 @@ namespace scan_planner
   {
     if (!msg || msg->poses.empty())
     {
+      if (msg && cancel_on_empty_path_)
+      {
+        pending_path_.reset();
+        have_target_ = false;
+        have_new_target_ = false;
+        trigger_ = false;
+        replan_fail_count_ = 0;
+        replan_retry_not_before_ = legbot::Time();
+        changeFSMExecState(WAIT_TARGET, "REFERENCE_CANCEL");
+        return;
+      }
       ROS_WARN_THROTTLE(1.0, "[pathCallback] Received empty /initial_path, ignore.");
       return;
     }

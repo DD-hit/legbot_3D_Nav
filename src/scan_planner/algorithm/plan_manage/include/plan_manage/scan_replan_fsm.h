@@ -69,6 +69,7 @@ namespace scan_planner
     double self_double_cylinder_radius_, self_double_cylinder_offset_;
     double z_projection_weight_;
     bool align_reference_height_to_odom_;
+    bool cancel_on_empty_path_;
     bool manual_goal_use_message_z_;
     bool odom_twist_in_body_frame_;
     double max_reference_height_alignment_;

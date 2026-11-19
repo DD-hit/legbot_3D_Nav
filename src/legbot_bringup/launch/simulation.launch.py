@@ -119,6 +119,7 @@ def setup(context):
             'command_timeout': 2.0,
             'navigation_timeout': 2.0,
             'require_navigation_data': cfg('require_navigation_data') == 'true',
+            'require_map_localization': cfg('navigation_source') == 'map_localized',
         }]),
         *([Node(package='legbot_bringup', executable='stair_cloud_sim', output='screen',
                parameters=[{'use_sim_time': True, 'odom_topic': '/Odometry_gazebo',
@@ -138,7 +139,7 @@ def generate_launch_description():
         # FAST-LIO is the normal navigation source. Gazebo truth can be
         # published independently for evaluation without entering control.
         DeclareLaunchArgument('navigation_source', default_value='fastlio',
-                              choices=['fastlio', 'ground_truth']),
+                              choices=['fastlio', 'ground_truth', 'map_localized']),
         DeclareLaunchArgument('publish_ground_truth', default_value='false', choices=['true','false']),
         DeclareLaunchArgument('diagnose_fastlio', default_value='false', choices=['true','false']),
         DeclareLaunchArgument('gui', default_value='false', choices=['true', 'false']),

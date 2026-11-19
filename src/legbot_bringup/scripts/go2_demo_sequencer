@@ -26,6 +26,7 @@ class DemoSequencer(Node):
         self.pulse_seconds = float(self.declare_parameter('mode_pulse_seconds', 1.0).value)
         self.goal_settle_seconds = max(
             0.0, float(self.declare_parameter('goal_settle_seconds', 1.5).value))
+        self.stand_on_plan_loss = self.declare_parameter('stand_on_plan_loss', False).value
         self.odom_topic = str(self.declare_parameter(
             'odom_topic', '/fast_lio/odometry_base').value)
         self.cloud_topic = str(self.declare_parameter(
@@ -90,6 +91,8 @@ class DemoSequencer(Node):
     def on_plan_ready(self, msg):
         self.plan_ready_source_seen = True
         self.plan_seen = bool(msg.data)
+        if not self.plan_seen and self.state in ('running', 'rl_pulse') and self.stand_on_plan_loss:
+            self.enter('stop_pulse')
 
     def on_complete(self, msg):
         self.mission_complete = bool(msg.data)

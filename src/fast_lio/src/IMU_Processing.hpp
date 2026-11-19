@@ -49,6 +49,7 @@ class ImuProcess
   void set_acc_cov(const V3D &scaler);
   void set_gyr_bias_cov(const V3D &b_g);
   void set_acc_bias_cov(const V3D &b_a);
+  void set_gravity_alignment(bool enabled) { align_gravity_ = enabled; }
   Eigen::Matrix<double, 12, 12> Q;
   void Process(const MeasureGroup &meas,  esekfom::esekf<state_ikfom, 12, input_ikfom> &kf_state, PointCloudXYZI::Ptr pcl_un_);
 
@@ -82,6 +83,7 @@ class ImuProcess
   int    init_iter_num = 1;
   bool   b_first_frame_ = true;
   bool   imu_need_init_ = true;
+  bool   align_gravity_ = false;
 };
 
 ImuProcess::ImuProcess()
@@ -235,9 +237,15 @@ void ImuProcess::IMU_init(const MeasureGroup &meas, esekfom::esekf<state_ikfom, 
     N ++;
   }
   state_ikfom init_state = kf_state.get_x();
-  init_state.grav = S2(- mean_acc / mean_acc.norm() * G_m_s2);
-  
-  //state_inout.rot = Eye3d; // Exp(mean_acc.cross(V3D(0, 0, -1 / scale_gravity)));
+  if (align_gravity_)
+  {
+    init_state.rot = SO3(Eigen::Quaterniond::FromTwoVectors(mean_acc, V3D::UnitZ()));
+    init_state.grav = S2(V3D(0.0, 0.0, -G_m_s2));
+  }
+  else
+  {
+    init_state.grav = S2(- mean_acc / mean_acc.norm() * G_m_s2);
+  }
   init_state.bg  = mean_gyr;
   init_state.offset_T_L_I = Lidar_T_wrt_IMU;
   init_state.offset_R_L_I = Lidar_R_wrt_IMU;

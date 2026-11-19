@@ -860,6 +860,7 @@ public:
         this->declare_parameter<bool>("feature_extract_enable", false);
         this->declare_parameter<bool>("runtime_pos_log_enable", false);
         this->declare_parameter<bool>("mapping.extrinsic_est_en", true);
+        const bool align_gravity = this->declare_parameter<bool>("mapping.align_gravity", false);
         world_frame = this->declare_parameter<std::string>("common.world_frame", "odom");
         body_frame = this->declare_parameter<std::string>("common.body_frame", "livox_imu_link");
         publish_tf = this->declare_parameter<bool>("publish.tf_en", false);
@@ -929,6 +930,7 @@ public:
         Lidar_T_wrt_IMU<<VEC_FROM_ARRAY(extrinT);
         Lidar_R_wrt_IMU<<MAT_FROM_ARRAY(extrinR);
         p_imu->set_extrinsic(Lidar_T_wrt_IMU, Lidar_R_wrt_IMU);
+        p_imu->set_gravity_alignment(align_gravity);
         p_imu->set_gyr_cov(V3D(gyr_cov, gyr_cov, gyr_cov));
         p_imu->set_acc_cov(V3D(acc_cov, acc_cov, acc_cov));
         p_imu->set_gyr_bias_cov(V3D(b_gyr_cov, b_gyr_cov, b_gyr_cov));

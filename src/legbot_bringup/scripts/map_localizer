@@ -1,0 +1,329 @@
+#!/usr/bin/env python3
+import json
+import math
+import time
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
+
+import numpy as np
+import rclpy
+from geometry_msgs.msg import PoseWithCovarianceStamped, TransformStamped
+from rcl_interfaces.msg import ParameterDescriptor
+from rclpy.clock import Clock, ClockType
+from rclpy.executors import ExternalShutdownException
+from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile, qos_profile_sensor_data
+from rclpy.time import Time
+from sensor_msgs.msg import PointCloud2
+from sensor_msgs_py import point_cloud2
+from std_msgs.msg import Bool, String
+from tf2_ros import Buffer, TransformBroadcaster, TransformException, TransformListener
+
+from map_match_core import LocalizationMap
+
+
+def unit_quaternion(quaternion):
+    values = np.array([quaternion.x, quaternion.y, quaternion.z, quaternion.w])
+    norm = np.linalg.norm(values)
+    if not math.isfinite(norm) or norm < 1e-6:
+        raise ValueError('invalid quaternion')
+    return values / norm
+
+
+def heading(quaternion):
+    qx, qy, qz, qw = unit_quaternion(quaternion)
+    return math.atan2(2 * (qw * qz + qx * qy), 1 - 2 * (qy * qy + qz * qz))
+
+
+def rotation_z(angle):
+    cosine, sine = math.cos(angle), math.sin(angle)
+    return np.array([[cosine, -sine, 0.], [sine, cosine, 0.], [0., 0., 1.]])
+
+
+class MapLocalizer(Node):
+    def __init__(self):
+        super().__init__('map_localizer')
+        defaults = {
+            'map_path': '', 'map_frame': 'map', 'odom_frame': 'odom', 'base_frame': 'base',
+            'lidar_frame': 'livox_link', 'cloud_topic': '/fast_lio/cloud_registered', 'initial_z_mode': 'floor',
+            'base_height': 0.32, 'floor_height': 0.0, 'mode': 'multi', 'xy_radius': 2.5,
+            'yaw_radius': 45.0, 'scan_frames': 4, 'validation_frames': 2,
+            'max_scan_translation': 0.15, 'max_scan_rotation_deg': 8.0,
+            'request_timeout': 25.0, 'sensor_timeout': 3.0,
+        }
+        for name, value in defaults.items():
+            self.declare_parameter(name, value, ParameterDescriptor(read_only=name != 'floor_height'))
+        self.settings = {name: self.get_parameter(name).value for name in defaults}
+        if self.settings['initial_z_mode'] not in ('base', 'floor', 'rviz_floor'):
+            raise ValueError('initial_z_mode must be base, floor or rviz_floor')
+        if self.settings['mode'] not in ('multi', 'single'):
+            raise ValueError('mode must be multi or single')
+        for name in ('scan_frames', 'validation_frames'):
+            if not 1 <= self.settings[name] <= 32:
+                raise ValueError(f'{name} must be between 1 and 32')
+        for name in ('xy_radius', 'yaw_radius', 'request_timeout', 'sensor_timeout',
+                     'max_scan_translation', 'max_scan_rotation_deg'):
+            if not math.isfinite(self.settings[name]) or self.settings[name] <= 0.0:
+                raise ValueError(f'{name} must be positive and finite')
+        frame_ids = [self.settings[name] for name in ('map_frame', 'odom_frame', 'base_frame')]
+        if any(not name or name.startswith('/') for name in frame_ids) or len(set(frame_ids)) != 3:
+            raise ValueError('map_frame, odom_frame and base_frame must be distinct TF frame IDs')
+        if not self.settings['lidar_frame'] or self.settings['lidar_frame'].startswith('/'):
+            raise ValueError('lidar_frame must be a TF frame ID')
+        if not math.isfinite(self.settings['base_height']) or self.settings['base_height'] < 0.0:
+            raise ValueError('base_height must be nonnegative and finite')
+        self.executor_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix='map_match')
+        self.reference = None
+        self.job = None
+        self.generation = 0
+        self.frame_count = self.settings['scan_frames'] + self.settings['validation_frames']
+        self.frames = deque(maxlen=self.frame_count + 2)
+        self.transform = None
+        self.last_sensor = None
+        self.last_stamp = -1
+        self.last_odom_stamp = -1
+        self.last_odom_time = 0.0
+        self.last_clock = self.get_clock().now().nanoseconds
+        self.state = ''
+        self.buffer = Buffer()
+        self.listener = TransformListener(self.buffer, self)
+        self.broadcaster = TransformBroadcaster(self)
+        latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        self.ready_pub = self.create_publisher(Bool, '/localization/ready', latched)
+        self.status_pub = self.create_publisher(String, '/localization/status', latched)
+        self.create_subscription(PoseWithCovarianceStamped, '/initialpose', self.on_seed, 10)
+        self.create_subscription(PointCloud2, self.settings['cloud_topic'], self.on_cloud,
+                                 qos_profile_sensor_data)
+        self.create_timer(0.2, self.poll, clock=Clock(clock_type=ClockType.STEADY_TIME))
+        self.report('WAITING_FOR_INITIAL_POSE', 'submit_initialpose_in_map')
+
+    def report(self, state, reason, **details):
+        self.state = state
+        if state != 'LOCALIZED':
+            self.transform = None
+        self.ready_pub.publish(Bool(data=state == 'LOCALIZED'))
+        payload = dict(state=state, reason=reason, request_id=self.generation, **details)
+        self.status_pub.publish(String(data=json.dumps(payload)))
+        self.get_logger().info(f'initial localization {self.generation}: {state} ({reason})')
+
+    def on_seed(self, message):
+        self.generation += 1
+        self.frames.clear()
+        self.transform = None
+        self.last_sensor = None
+        self.last_odom_stamp = -1
+        self.ready_pub.publish(Bool(data=False))
+        if message.header.frame_id != self.settings['map_frame']:
+            self.report('FAILED', 'initial_pose_frame_mismatch')
+            return
+        try:
+            pose = message.pose.pose
+            z = pose.position.z
+            if self.settings['initial_z_mode'] == 'rviz_floor':
+                z = self.get_parameter('floor_height').value
+            if self.settings['initial_z_mode'] != 'base':
+                z += self.settings['base_height']
+            self.seed = [pose.position.x, pose.position.y, z, heading(pose.orientation)]
+            if not np.isfinite(self.seed).all():
+                raise ValueError('nonfinite initial pose')
+        except ValueError as error:
+            self.report('FAILED', 'invalid_initial_pose', detail=str(error))
+            return
+        self.seed_time = self.get_clock().now().nanoseconds
+        self.deadline = time.monotonic() + self.settings['request_timeout']
+        self.last_stamp = -1
+        self.wait_reason = 'waiting_for_fresh_registered_cloud'
+        self.scan_spread = {}
+        self.report('COLLECTING', self.wait_reason)
+
+    def on_cloud(self, message):
+        if self.state not in ('COLLECTING', 'MATCHING', 'LOCALIZED'):
+            return
+        if message.header.frame_id != self.settings['odom_frame']:
+            if self.state == 'COLLECTING':
+                self.wait_reason = 'registered_cloud_frame_mismatch'
+            return
+        timestamp = Time.from_msg(message.header.stamp)
+        now_ns = self.get_clock().now().nanoseconds
+        age = (now_ns - timestamp.nanoseconds) * 1e-9
+        if (timestamp.nanoseconds <= 0 or timestamp.nanoseconds <= self.last_stamp or
+                timestamp.nanoseconds < self.seed_time or age < -0.1 or age > self.settings['sensor_timeout']):
+            return
+        try:
+            fields = point_cloud2.read_points(message, field_names=['x', 'y', 'z'])
+            valid = np.isfinite(fields['x']) & np.isfinite(fields['y']) & np.isfinite(fields['z'])
+        except (AssertionError, KeyError, ValueError, TypeError, BufferError) as error:
+            self.report('LOST' if self.state == 'LOCALIZED' else 'FAILED', 'invalid_cloud_fields', detail=str(error))
+            return
+        if np.count_nonzero(valid) < 30:
+            self.wait_reason = 'insufficient_finite_points'
+            return
+        self.last_stamp = timestamp.nanoseconds
+        self.last_sensor = time.monotonic()
+        if self.state == 'COLLECTING':
+            points = np.column_stack([fields[name][valid] for name in ('x', 'y', 'z')])
+            stride = max(1, (len(points) + 23999) // 24000)
+            self.frames.append((timestamp, points[::stride].copy()))
+
+    def match(self, frames, seed, origin, odom_heading, sensor_origin):
+        if self.reference is None:
+            self.reference = LocalizationMap(self.settings['map_path'])
+        split = self.settings['scan_frames']
+        rotation = rotation_z(odom_heading)
+        source = (np.concatenate(frames[:split]) - origin) @ rotation
+        validation = (np.concatenate(frames[split:]) - origin) @ rotation
+        return self.reference.match(source, seed, mode=self.settings['mode'],
+                                    validation_xyz=validation, xy_radius=self.settings['xy_radius'],
+                                    yaw_radius=self.settings['yaw_radius'], sensor_origin=sensor_origin)
+
+    def start_job(self):
+        odom_frame = self.settings['odom_frame']
+        observations = []
+        for timestamp, points in reversed(self.frames):
+            try:
+                lidar = self.buffer.lookup_transform(odom_frame, self.settings['lidar_frame'], timestamp).transform
+            except TransformException:
+                continue
+            observations.append((timestamp, points, lidar))
+            if len(observations) == self.frame_count:
+                break
+        if len(observations) < self.frame_count:
+            has_odometry = self.buffer.can_transform(odom_frame, self.settings['base_frame'], Time())
+            self.wait_reason = ('missing_timestamped_odom_lidar_transform' if has_odometry
+                                else 'missing_timestamped_odom_base_transform')
+            return
+        observations.reverse()
+        stamp = observations[0][0]
+        try:
+            base = self.buffer.lookup_transform(odom_frame, self.settings['base_frame'], stamp).transform
+        except TransformException:
+            self.wait_reason = 'missing_timestamped_odom_base_transform'
+            return
+        lidar_poses = [lidar for _, _, lidar in observations]
+        try:
+            yaw = heading(base.rotation)
+            orientations = np.array([unit_quaternion(pose.rotation) for pose in lidar_poses])
+        except ValueError:
+            self.report('FAILED', 'invalid_odometry')
+            return
+        origin = np.array([base.translation.x, base.translation.y, base.translation.z])
+        positions = np.array([[pose.translation.x, pose.translation.y, pose.translation.z] for pose in lidar_poses])
+        if not np.isfinite(origin).all() or not np.isfinite(positions).all():
+            self.report('FAILED', 'invalid_odometry')
+            return
+        translation_span = float(np.max(np.linalg.norm(positions[:, None] - positions[None, :], axis=2)))
+        min_alignment = float(np.clip(np.abs(orientations @ orientations.T).min(), 0., 1.))
+        rotation_span = math.degrees(2.0 * math.acos(min_alignment))
+        self.scan_spread = dict(translation_m=translation_span, rotation_deg=rotation_span)
+        if (translation_span > self.settings['max_scan_translation'] or
+                rotation_span > self.settings['max_scan_rotation_deg']):
+            self.wait_reason = 'robot_moved_during_collection'
+            return
+        sensor_origin = (positions[0] - origin) @ rotation_z(yaw)
+        frames = [points for _, points, _ in observations]
+        future = self.executor_pool.submit(self.match, frames, self.seed, origin, yaw, sensor_origin)
+        self.job = (future, self.generation, origin, yaw, stamp.nanoseconds)
+        self.last_odom_stamp = stamp.nanoseconds
+        self.last_odom_time = time.monotonic()
+        self.frames.clear()
+        self.report('MATCHING', 'scoring_map_candidates', scan_spread=self.scan_spread)
+
+    def finish_job(self):
+        future, generation, origin, odom_heading, reference_stamp = self.job
+        self.job = None
+        if generation != self.generation or self.state != 'MATCHING':
+            return
+        try:
+            result = future.result()
+        except OSError as error:
+            self.report('FAILED', 'map_read_error', detail=str(error))
+            return
+        except Exception as error:
+            self.report('FAILED', 'registration_exception', detail=str(error))
+            return
+        if not result['success']:
+            self.report('FAILED', result['reason'], metrics=result['metrics'], seconds=result['seconds'])
+            return
+        pose = result['pose']
+        yaw_delta = pose[3] - odom_heading
+        offset = np.asarray(pose[:3]) - rotation_z(yaw_delta) @ origin
+        transform = TransformStamped()
+        transform.header.frame_id = self.settings['map_frame']
+        transform.child_frame_id = self.settings['odom_frame']
+        translation = transform.transform.translation
+        translation.x, translation.y, translation.z = offset.tolist()
+        transform.transform.rotation.z = math.sin(yaw_delta / 2)
+        transform.transform.rotation.w = math.cos(yaw_delta / 2)
+        self.transform = transform
+        fix_stamp = self.publish_transform()
+        self.report('LOCALIZED', result['reason'], pose=pose, reference_stamp_ns=reference_stamp,
+                    fix_stamp_ns=fix_stamp, metrics=result['metrics'], seconds=result['seconds'],
+                    scan_spread=self.scan_spread)
+
+    def publish_transform(self):
+        stamp = self.get_clock().now()
+        if self.transform.header.stamp != stamp.to_msg():
+            self.transform.header.stamp = stamp.to_msg()
+            self.broadcaster.sendTransform(self.transform)
+        return stamp.nanoseconds
+
+    def sensor_failure(self, now, ros_now):
+        timeout = self.settings['sensor_timeout']
+        if self.last_sensor is None or now - self.last_sensor > timeout:
+            return 'stale_registered_cloud'
+        try:
+            latest = self.buffer.lookup_transform(self.settings['odom_frame'], self.settings['base_frame'], Time())
+        except TransformException:
+            return 'missing_odom_base_transform'
+        odom_stamp = Time.from_msg(latest.header.stamp).nanoseconds
+        if odom_stamp > self.last_odom_stamp:
+            self.last_odom_time = now
+            self.last_odom_stamp = odom_stamp
+        if not -0.1 <= (ros_now - odom_stamp) * 1e-9 <= timeout or now - self.last_odom_time > timeout:
+            return 'stale_odom_base_transform'
+        return None
+
+    def poll(self):
+        now = time.monotonic()
+        ros_now = self.get_clock().now().nanoseconds
+        if ros_now < self.last_clock - 100_000_000:
+            self.buffer.clear()
+            self.frames.clear()
+            if self.state in ('COLLECTING', 'MATCHING', 'LOCALIZED'):
+                self.report('LOST' if self.state == 'LOCALIZED' else 'FAILED', 'ros_time_reset')
+        self.last_clock = ros_now
+        if self.state in ('COLLECTING', 'MATCHING') and now >= self.deadline:
+            reason = self.wait_reason if self.state == 'COLLECTING' else 'registration_timeout'
+            self.frames.clear()
+            self.report('FAILED', reason, scan_spread=self.scan_spread)
+        if self.state in ('MATCHING', 'LOCALIZED'):
+            failure = self.sensor_failure(now, ros_now)
+            if failure:
+                self.report('LOST' if self.state == 'LOCALIZED' else 'FAILED', failure)
+        if self.job and self.job[0].done():
+            self.finish_job()
+        if self.state == 'COLLECTING' and len(self.frames) >= self.frame_count and self.job is None:
+            self.start_job()
+        if self.state == 'LOCALIZED':
+            self.publish_transform()
+        self.ready_pub.publish(Bool(data=self.state == 'LOCALIZED'))
+
+    def destroy_node(self):
+        self.executor_pool.shutdown(wait=False, cancel_futures=True)
+        return super().destroy_node()
+
+
+def main():
+    rclpy.init()
+    node = MapLocalizer()
+    try:
+        rclpy.spin(node)
+    except (KeyboardInterrupt, ExternalShutdownException):
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.try_shutdown()
+
+
+if __name__ == '__main__':
+    main()

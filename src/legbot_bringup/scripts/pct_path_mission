@@ -1,16 +1,21 @@
 #!/usr/bin/env python3
 """Transform a Building-local PCT route into odom and execute it as one mission."""
 
+import json
 import math
 import sys
 
 import rclpy
 from geometry_msgs.msg import PoseStamped, TransformStamped
 from nav_msgs.msg import Odometry, Path
+from rclpy.clock import Clock, ClockType
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
-from std_msgs.msg import Bool
+from rclpy.time import Time
+from scan_planner.msg import Bspline
+from std_msgs.msg import Bool, Header, String
+from tf2_ros import Buffer, TransformException, TransformListener
 from tf2_ros.static_transform_broadcaster import StaticTransformBroadcaster
 
 
@@ -42,6 +47,16 @@ def transform_xyz(local, odom, building, spawn):
     )
 
 
+def transform_point(point, transform, inverse=False):
+    tx, ty, tz, angle = transform
+    cosine, sine = math.cos(angle), math.sin(angle)
+    px, py, pz = point
+    if inverse:
+        dx, dy = px - tx, py - ty
+        return (cosine * dx + sine * dy, -sine * dx + cosine * dy, pz - tz)
+    return (tx + cosine * px - sine * py, ty + sine * px + cosine * py, tz + pz)
+
+
 class PctPathMission(Node):
     def __init__(self):
         super().__init__('pct_path_mission')
@@ -60,19 +75,21 @@ class PctPathMission(Node):
             'pct_frame_id', 'building_pct').value)
         self.publish_map_tf = bool(self.declare_parameter(
             'publish_map_tf', True).value)
+        self.use_map_localization = self.declare_parameter('use_map_localization', False).value
 
-        self.building = (
-            float(self.declare_parameter('building_x', 13.0).value),
-            float(self.declare_parameter('building_y', 0.0).value),
-            float(self.declare_parameter('building_z', 0.0).value),
-            float(self.declare_parameter('building_yaw', 0.0).value),
-        )
-        self.spawn = (
-            float(self.declare_parameter('spawn_x', -27.0).value),
-            float(self.declare_parameter('spawn_y', 6.0).value),
-            float(self.declare_parameter('spawn_z', 0.50).value),
-            float(self.declare_parameter('spawn_yaw', 0.0).value),
-        )
+        if not self.use_map_localization:
+            self.building = (
+                float(self.declare_parameter('building_x', 13.0).value),
+                float(self.declare_parameter('building_y', 0.0).value),
+                float(self.declare_parameter('building_z', 0.0).value),
+                float(self.declare_parameter('building_yaw', 0.0).value),
+            )
+            self.spawn = (
+                float(self.declare_parameter('spawn_x', -27.0).value),
+                float(self.declare_parameter('spawn_y', 6.0).value),
+                float(self.declare_parameter('spawn_z', 0.50).value),
+                float(self.declare_parameter('spawn_yaw', 0.0).value),
+            )
 
         latched = QoSProfile(depth=1)
         latched.reliability = ReliabilityPolicy.RELIABLE
@@ -84,7 +101,7 @@ class PctPathMission(Node):
         self.goal_pub = self.create_publisher(PoseStamped, self.goal_topic, reliable)
         self.complete_pub = self.create_publisher(
             Bool, '/scan/mission_complete', latched)
-        self.static_tf = StaticTransformBroadcaster(self)
+        self.static_tf = StaticTransformBroadcaster(self) if self.publish_map_tf and not self.use_map_localization else None
         self.create_subscription(Path, self.input_topic, self.on_path, latched)
         self.create_subscription(
             Odometry, self.odom_topic, self.on_odom, qos_profile_sensor_data)
@@ -99,12 +116,30 @@ class PctPathMission(Node):
         self.completed = False
         self.goal_stamp = None
         self.map_tf_published = False
+        self.fix_stamp_ns = None
+        self.request_stamp = None
+        self.last_goal_ns = -1
+        self.map_from_odom = None
+        self.plan_accepted = False
+        if self.use_map_localization:
+            self.buffer = Buffer()
+            self.listener = TransformListener(self.buffer, self)
+            self.start_pub = self.create_publisher(PoseStamped, '/pct/localized_start', latched)
+            self.permit_pub = self.create_publisher(Header, '/pct/motion_permit', latched)
+            self.plan_ready_pub = self.create_publisher(Bool, '/scan/plan_ready', latched)
+            self.plan_ready_pub.publish(Bool(data=False))
+            self.create_subscription(String, '/localization/status', self.on_localization, latched)
+            self.create_subscription(Bspline, '/scan/planning/bspline', self.on_plan, reliable)
+            self.create_timer(0.2, self.tick_localized, clock=Clock(clock_type=ClockType.STEADY_TIME))
         self.complete_pub.publish(Bool(data=False))
         self.get_logger().info(
             'Waiting for PCT path on %s and navigation readiness on %s' %
             (self.input_topic, self.ready_topic))
 
     def on_path(self, msg):
+        if self.use_map_localization and (self.request_stamp is None or self.started
+                or msg.header.frame_id != self.pct_frame_id or msg.header.stamp != self.request_stamp):
+            return
         if len(msg.poses) < 2:
             self.get_logger().error('Rejected PCT path with fewer than two poses')
             return
@@ -121,24 +156,120 @@ class PctPathMission(Node):
         self.start_if_ready()
 
     def on_odom(self, msg):
-        if self.started:
+        if self.started and not self.use_map_localization:
+            return
+        if self.use_map_localization and msg.header.frame_id != self.frame_id:
             return
         p = msg.pose.pose.position
         yaw = yaw_from_quaternion(msg.pose.pose.orientation)
         values = (p.x, p.y, p.z, yaw)
         if all(math.isfinite(value) for value in values):
             self.initial_odom = values
-            self.start_if_ready()
+            self.odom_stamp_ns = Time.from_msg(msg.header.stamp).nanoseconds
+            if not self.started:
+                self.start_if_ready()
 
     def on_ready(self, msg):
         self.ready = bool(msg.data)
         self.start_if_ready()
 
+    def on_localization(self, msg):
+        try:
+            status = json.loads(msg.data)
+            fix = int(status['fix_stamp_ns']) if status['state'] == 'LOCALIZED' else None
+        except (KeyError, ValueError, TypeError):
+            fix = None
+        if fix == self.fix_stamp_ns:
+            return
+        if self.fix_stamp_ns is not None:
+            self.cancel_localized_mission()
+        self.fix_stamp_ns = fix
+        self.start_if_ready()
+
+    def cancel_localized_mission(self):
+        self.plan_accepted = False
+        self.publish_permit()
+        self.plan_ready_pub.publish(Bool(data=False))
+        self.start_pub.publish(PoseStamped())
+        stop_path = Path()
+        stop_path.header.frame_id = self.frame_id
+        stop_path.header.stamp = self.next_goal_stamp()
+        self.path_pub.publish(stop_path)
+        if self.started and not self.completed:
+            stop = PoseStamped()
+            stop.header = stop_path.header
+            stop.pose.position.x, stop.pose.position.y, stop.pose.position.z = self.initial_odom[:3]
+            stop.pose.orientation.w = 1.0
+            self.goal_pub.publish(stop)
+        self.raw_path = self.request_stamp = self.goal_stamp = self.map_from_odom = None
+        self.started = self.completed = False
+        self.get_logger().info('Cancelled localized PCT mission and revoked walking permission')
+
+    def next_goal_stamp(self):
+        self.last_goal_ns = max(self.last_goal_ns + 1, self.get_clock().now().nanoseconds)
+        return Time(nanoseconds=self.last_goal_ns).to_msg()
+
+    def publish_permit(self):
+        permit = Header()
+        if self.plan_accepted and not self.completed and self.fix_stamp_ns is not None:
+            permit.frame_id = self.pct_frame_id
+            permit.stamp = Time(nanoseconds=self.fix_stamp_ns).to_msg()
+        self.permit_pub.publish(permit)
+
+    def tick_localized(self):
+        self.publish_permit()
+        self.start_if_ready()
+
+    def on_plan(self, msg):
+        if not self.started or self.completed or self.plan_accepted:
+            return
+        if ((msg.start_time.sec, msg.start_time.nanosec) < self.goal_stamp
+                or msg.order <= 0 or len(msg.pos_pts) <= msg.order
+                or len(msg.knots) != len(msg.pos_pts) + msg.order + 1
+                or not all(math.isfinite(knot) for knot in msg.knots)):
+            return
+        points = [(point.x, point.y, point.z) for point in msg.pos_pts]
+        if (all(math.isfinite(value) for point in points for value in point)
+                and max(math.dist(points[0], point) for point in points) > 0.05):
+            self.plan_accepted = True
+            self.publish_permit()
+            self.plan_ready_pub.publish(Bool(data=True))
+
+    def request_localized_path(self):
+        if self.fix_stamp_ns is None or self.request_stamp is not None:
+            return
+        now_ns = self.get_clock().now().nanoseconds
+        if self.odom_stamp_ns < self.fix_stamp_ns or not 0 <= now_ns - self.odom_stamp_ns <= 2_000_000_000:
+            return
+        try:
+            latest = self.buffer.lookup_transform(self.pct_frame_id, self.frame_id, Time())
+        except TransformException:
+            return
+        if Time.from_msg(latest.header.stamp).nanoseconds < self.fix_stamp_ns:
+            return
+        offset = latest.transform.translation
+        self.map_from_odom = (offset.x, offset.y, offset.z, yaw_from_quaternion(latest.transform.rotation))
+        start = PoseStamped()
+        start.header.frame_id = self.pct_frame_id
+        start.header.stamp = Time(nanoseconds=self.odom_stamp_ns).to_msg()
+        self.request_stamp = start.header.stamp
+        start_xyz = transform_point(self.initial_odom[:3], self.map_from_odom)
+        start.pose.position.x, start.pose.position.y, start.pose.position.z = start_xyz
+        yaw = self.initial_odom[3] + self.map_from_odom[3]
+        start.pose.orientation.z, start.pose.orientation.w = math.sin(0.5*yaw), math.cos(0.5*yaw)
+        self.start_pub.publish(start)
+        self.get_logger().info('Requested PCT route from localized base in %s: [%.3f %.3f %.3f]' %
+                               (self.pct_frame_id, *start_xyz))
+
     def start_if_ready(self):
-        if self.started or not self.ready or self.raw_path is None or self.initial_odom is None:
+        if self.started or not self.ready or self.initial_odom is None:
+            return
+        if self.use_map_localization:
+            self.request_localized_path()
+        if self.raw_path is None:
             return
 
-        stamp = self.get_clock().now().to_msg()
+        stamp = self.next_goal_stamp()
         self.publish_map_transform(stamp)
         transformed = Path()
         transformed.header.frame_id = self.frame_id
@@ -150,8 +281,16 @@ class PctPathMission(Node):
                 source.pose.position.y,
                 source.pose.position.z,
             )
-            points.append(transform_xyz(
-                local, self.initial_odom, self.building, self.spawn))
+            if self.use_map_localization:
+                points.append(transform_point(local, self.map_from_odom, inverse=True))
+            else:
+                points.append(transform_xyz(local, self.initial_odom, self.building, self.spawn))
+
+        if self.use_map_localization:
+            if math.dist(points[0][:2], self.initial_odom[:2]) > 0.75 or abs(points[0][2] - self.initial_odom[2]) > 0.75:
+                self.get_logger().error('Rejected PCT route: its first cell does not match the localized base/floor')
+                self.raw_path = None
+                return
 
         for index, point in enumerate(points):
             pose = PoseStamped()
@@ -187,7 +326,7 @@ class PctPathMission(Node):
 
     def publish_map_transform(self, stamp):
         """Publish the same Building-local -> odom transform used by the route."""
-        if self.map_tf_published or not self.publish_map_tf:
+        if self.map_tf_published or self.static_tf is None:
             return
         origin = transform_xyz(
             (0.0, 0.0, 0.0), self.initial_odom, self.building, self.spawn)
@@ -214,6 +353,8 @@ class PctPathMission(Node):
         if stamp != self.goal_stamp:
             return
         self.completed = True
+        if self.use_map_localization:
+            self.publish_permit()
         self.complete_pub.publish(Bool(data=True))
         self.get_logger().info(
             'PCT cross-floor mission complete; GO2 may return to fixed stand')

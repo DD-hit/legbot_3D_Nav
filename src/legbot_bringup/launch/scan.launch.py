@@ -15,6 +15,7 @@ def generate_launch_description():
     actions.append(DeclareLaunchArgument('odom_topic', default_value='/fast_lio/odometry_base'))
     actions.append(DeclareLaunchArgument('cloud_topic', default_value='/fast_lio/cloud_registered'))
     actions.append(DeclareLaunchArgument('global_path_topic', default_value='/pct_path'))
+    actions.append(DeclareLaunchArgument('cancel_on_empty_path', default_value='false', choices=['true', 'false']))
     actions.append(DeclareLaunchArgument('frame_id', default_value='odom'))
     actions.append(DeclareLaunchArgument('lidar_horizontal_fov_deg', default_value='240.0'))
     actions.append(DeclareLaunchArgument(
@@ -60,6 +61,7 @@ def generate_launch_description():
     actions.append(Node(package='scan_planner', executable='scan_planner_node', name='scan_planner_node', output="screen",
         parameters=[config, LaunchConfiguration('keypoints_yaml'), {
             'fsm.global_reference_mode': ParameterValue(LaunchConfiguration('reference_mode'), value_type=str),
+            'fsm.cancel_on_empty_path': ParameterValue(LaunchConfiguration('cancel_on_empty_path'), value_type=bool),
             'fsm.planning_horizon': ParameterValue(LaunchConfiguration('planning_horizon'), value_type=float),
             'fsm.thresh_replan': ParameterValue(LaunchConfiguration('replan_thresh'), value_type=float),
             'fsm.thresh_no_replan': ParameterValue(LaunchConfiguration('no_replan_thresh'), value_type=float),

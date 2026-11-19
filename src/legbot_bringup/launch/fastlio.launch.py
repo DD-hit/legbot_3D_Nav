@@ -10,8 +10,10 @@ def setup(context):
     use_sim_time = LaunchConfiguration('use_sim_time').perform(context) == 'true'
     config = LaunchConfiguration('config').perform(context)
     sensor_frame = LaunchConfiguration('sensor_frame').perform(context)
+    align_gravity = LaunchConfiguration('align_gravity').perform(context) == 'true'
     return [
-        Node(package='fast_lio', executable='fastlio_mapping', parameters=[config, {'use_sim_time': use_sim_time}],
+        Node(package='fast_lio', executable='fastlio_mapping',
+             parameters=[config, {'use_sim_time': use_sim_time, 'mapping.align_gravity': align_gravity}],
              remappings=[('/Odometry','/fast_lio/odometry_sensor'),
                          ('/cloud_registered','/fast_lio/cloud_registered'),
                          ('/cloud_registered_body','/fast_lio/cloud_registered_body'),
@@ -33,5 +35,6 @@ def generate_launch_description():
         DeclareLaunchArgument('config', default_value=os.path.join(share('legbot_bringup'),'config/fastlio_real.yaml')),
         DeclareLaunchArgument('sensor_frame', default_value='livox_imu_link'),
         DeclareLaunchArgument('lidar_frame', default_value='livox_link'),
+        DeclareLaunchArgument('align_gravity', default_value='false', choices=['true', 'false']),
         OpaqueFunction(function=setup),
     ])

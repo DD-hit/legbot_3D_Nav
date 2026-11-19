@@ -1,0 +1,87 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+  - Class: rviz_common/Views
+    Name: Views
+Visualization Manager:
+  Class: ""
+  Enabled: true
+  Global Options:
+    Fixed Frame: map
+    Background Color: 35; 35; 35
+    Frame Rate: 30
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Map grid
+      Enabled: true
+      Reference Frame: map
+      Plane Cell Count: 22
+      Cell Size: 1
+      Alpha: 0.3
+    - Class: rviz_default_plugins/PointCloud2
+      Name: Floor surfaces
+      Enabled: true
+      Topic:
+        Value: /tomogram
+        Reliability Policy: Reliable
+        Durability Policy: Transient Local
+      Style: Points
+      Size (Pixels): 2
+      Alpha: 0.30
+      Axis: Z
+      Color Transformer: AxisColor
+      Position Transformer: XYZ
+    - Class: rviz_default_plugins/RobotModel
+      Name: GO2
+      Enabled: true
+      Description Source: Topic
+      Description Topic:
+        Value: /go2/robot_description
+        Reliability Policy: Reliable
+        Durability Policy: Transient Local
+    - Class: rviz_default_plugins/PointCloud2
+      Name: Live LiDAR
+      Enabled: true
+      Topic:
+        Value: /fast_lio/cloud_registered
+        Reliability Policy: Best Effort
+        Durability Policy: Volatile
+      Style: Points
+      Size (Pixels): 1
+      Color: 245; 245; 245
+      Color Transformer: FlatColor
+      Position Transformer: XYZ
+    - Class: rviz_default_plugins/Path
+      Name: PCT route
+      Enabled: true
+      Topic:
+        Value: /pct_path
+        Reliability Policy: Reliable
+        Durability Policy: Transient Local
+      Color: 255; 105; 55
+      Line Style: Billboards
+      Line Width: 0.075
+  Tools:
+    - Class: rviz_default_plugins/Interact
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/SetInitialPose
+      Topic:
+        Value: /initialpose
+        Reliability Policy: Reliable
+        Durability Policy: Volatile
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Target Frame: map
+      Focal Point: {X: 1.0, Y: 0.0, Z: 1.5}
+      Distance: 26
+      Pitch: 1.48
+      Yaw: 1.57
+    Saved:
+      - Class: rviz_default_plugins/Orbit
+        Name: Follow GO2
+        Target Frame: base
+        Focal Point: {X: 0.0, Y: 0.0, Z: 0.1}
+        Distance: 4.5
+        Pitch: 0.55
+        Yaw: 3.6

@@ -13,11 +13,13 @@ install(PROGRAMS
   scripts/go2_command_adapter
   scripts/go2_estop_keyboard
   scripts/go2_demo_sequencer
+  scripts/map_localizer
   scripts/pct_path_mission
   scripts/fastlio_truth_monitor
   scripts/scan_waypoint_mission
   scripts/stair_cloud_sim
   DESTINATION lib/${PROJECT_NAME})
+install(FILES scripts/map_match_core.py DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY launch config models worlds rviz DESTINATION share/${PROJECT_NAME}
   PATTERN "__pycache__" EXCLUDE
   PATTERN "*.pyc" EXCLUDE)

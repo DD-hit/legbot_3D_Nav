@@ -154,6 +154,19 @@ for path in sorted(Path('src/legbot_bringup/launch').glob('*.launch.py')):
         assert 'Description Source: Topic' in rviz_source
         assert 'Value: /go2/robot_description' in rviz_source
         assert 'Target Frame: base' in rviz_source
+        localized_context = LaunchContext()
+        localized_context.launch_configurations['navigation_source'] = 'map_localized'
+        for declaration in description.entities:
+            if isinstance(declaration, DeclareLaunchArgument) and declaration.default_value is not None:
+                declaration.execute(localized_context)
+        assert localized_context.launch_configurations['spawn_x'] == '7.5'
+        localized_bridge = next(action for action in module.setup(localized_context)
+                                if isinstance(action, Node) and str(action.node_executable) == 'pct_path_mission')
+        assert any(item.get('use_map_localization') is True and item.get('publish_map_tf') is False
+                   and item.get('pct_frame_id') == 'map' and item.get('odom_topic') == '/fast_lio/odometry_base'
+                   and 'spawn_x' not in item and 'building_x' not in item
+                   for item in evaluate_parameters(localized_context, localized_bridge._Node__parameters)
+                   if isinstance(item, dict))
     if path.name == 'fastlio.launch.py':
         assert context.launch_configurations['sensor_frame'] == 'livox_imu_link'
         assert context.launch_configurations['lidar_frame'] == 'livox_link'

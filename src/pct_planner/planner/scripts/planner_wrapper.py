@@ -233,7 +233,7 @@ class TomogramPlanner(object):
             self.cfg.planner, 'route_simplify_epsilon', 0.08)))
         return self._simplify_route(route, epsilon)
 
-    def plan(self, start_pos, end_pos, optimize=None):
+    def plan(self, start_pos, end_pos, optimize=None, allow_stationary=False):
         # TODO: calculate slice index. By default the start and end pos are all at slice 0
 
         # print("pos origin start:", start_pos)
@@ -259,9 +259,16 @@ class TomogramPlanner(object):
 
         if optimize is None:
             optimize = bool(getattr(self.cfg.planner, 'optimize_path', False))
+        same_cell = allow_stationary and np.array_equal(self.start_idx, self.end_idx)
+        if same_cell:
+            optimize = False
         planned = self.planner.plan(self.start_idx, self.end_idx, bool(optimize))
         if not planned:
             return None
+        if same_cell:
+            if abs(start_pos[2] - end_pos[2]) > 0.5:
+                return None
+            return np.stack((start_pos, end_pos))
         path_finder: a_star.Astar = self.planner.get_path_finder()
         path = path_finder.get_result_matrix()
         if len(path) == 0:
