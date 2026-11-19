@@ -40,6 +40,9 @@
 #include <pluginlib/class_loader.hpp>
 
 #include <rclcpp/rclcpp.hpp>
+#ifdef LEGBOT_ROS_HUMBLE
+#include <rclcpp/parameter_client.hpp>
+#endif
 
 #include "gz_quadruped_hardware/gz_quadruped_plugin.hpp"
 #include "gz_quadruped_hardware/gz_system.hpp"
@@ -53,8 +56,11 @@ namespace gz_quadruped_hardware
             rclcpp::Node::SharedPtr& node,
             sim::EntityComponentManager& ecm,
             std::map<std::string, sim::Entity> enabledJoints)
-            : ResourceManager(
+            :
+#ifndef LEGBOT_ROS_HUMBLE
+              ResourceManager(
                   node->get_node_clock_interface(), node->get_node_logging_interface()),
+#endif
               gz_system_loader_("gz_quadruped_hardware", "gz_quadruped_hardware::GazeboSimSystemInterface"),
               logger_(node->get_logger().get_child("GZResourceManager"))
         {
@@ -68,22 +74,33 @@ namespace gz_quadruped_hardware
         // Called from Controller Manager when robot description is initialized from callback
         bool load_and_initialize_components(
             const std::string& urdf,
-            unsigned int update_rate) override
+            unsigned int update_rate)
+#ifndef LEGBOT_ROS_HUMBLE
+            override
+#endif
         {
+#ifndef LEGBOT_ROS_HUMBLE
             components_are_loaded_and_initialized_ = true;
+#endif
 
             const auto hardware_info = hardware_interface::parse_control_resources_from_urdf(urdf);
 
             for (const auto& individual_hardware_info : hardware_info)
             {
-                std::string robot_hw_sim_type_str_ = individual_hardware_info.hardware_plugin_name;
+#ifdef LEGBOT_ROS_HUMBLE
+                const auto& robot_hw_sim_type_str_ = individual_hardware_info.hardware_class_type;
+#else
+                const auto& robot_hw_sim_type_str_ = individual_hardware_info.hardware_plugin_name;
+#endif
                 RCLCPP_DEBUG(
                     logger_, "Load hardware interface %s ...",
                     robot_hw_sim_type_str_.c_str());
 
                 // Load hardware
                 std::unique_ptr<GazeboSimSystemInterface> gzSimSystem;
+#ifndef LEGBOT_ROS_HUMBLE
                 std::scoped_lock guard(resource_interfaces_lock_, claimed_command_interfaces_lock_);
+#endif
                 try
                 {
                     gzSimSystem = std::unique_ptr<GazeboSimSystemInterface>(
@@ -95,7 +112,11 @@ namespace gz_quadruped_hardware
                         logger_,
                         "The plugin failed to load for some reason. Error: %s\n",
                         ex.what());
+#ifdef LEGBOT_ROS_HUMBLE
+                    return false;
+#else
                     continue;
+#endif
                 }
 
                 // initialize simulation requirements
@@ -108,8 +129,12 @@ namespace gz_quadruped_hardware
                 {
                     RCLCPP_FATAL(
                         logger_, "Could not initialize robot simulation interface");
+#ifdef LEGBOT_ROS_HUMBLE
+                    return false;
+#else
                     components_are_loaded_and_initialized_ = false;
                     break;
+#endif
                 }
                 RCLCPP_DEBUG(
                     logger_, "Initialized robot simulation interface %s!",
@@ -117,9 +142,21 @@ namespace gz_quadruped_hardware
 
                 // initialize hardware
                 import_component(std::move(gzSimSystem), individual_hardware_info);
+#ifdef LEGBOT_ROS_HUMBLE
+                rclcpp_lifecycle::State active_state(lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE, "active");
+                if (set_component_state(individual_hardware_info.name, active_state) !=
+                    hardware_interface::return_type::OK)
+                {
+                    return false;
+                }
+#endif
             }
 
+#ifdef LEGBOT_ROS_HUMBLE
+            return !hardware_info.empty();
+#else
             return components_are_loaded_and_initialized_;
+#endif
         }
 
     private:
@@ -255,13 +292,15 @@ namespace gz_quadruped_hardware
     GazeboSimQuadrupedPlugin::~GazeboSimQuadrupedPlugin()
     {
         // Stop controller manager thread
-        if (!this->dataPtr->controller_manager_)
+        if (this->dataPtr->controller_manager_)
         {
-            return;
+            this->dataPtr->executor_->remove_node(this->dataPtr->controller_manager_);
         }
-        this->dataPtr->executor_->remove_node(this->dataPtr->controller_manager_);
-        this->dataPtr->executor_->cancel();
-        this->dataPtr->thread_executor_spin_.join();
+        if (this->dataPtr->thread_executor_spin_.joinable())
+        {
+            this->dataPtr->executor_->cancel();
+            this->dataPtr->thread_executor_spin_.join();
+        }
     }
 
     //////////////////////////////////////////////////
@@ -391,7 +430,7 @@ namespace gz_quadruped_hardware
             return;
         }
 
-        std::unique_ptr<hardware_interface::ResourceManager> resource_manager_ =
+        auto resource_manager_ =
             std::make_unique<GZResourceManager>(this->dataPtr->node_, _ecm, enabledJoints);
 
         // Create the controller manager
@@ -403,6 +442,31 @@ namespace gz_quadruped_hardware
         arguments.push_back("__ns:=" + ns);
         options.arguments(arguments);
         options.append_parameter_override("use_sim_time", true);  // enable sim time for controller manager
+
+#ifdef LEGBOT_ROS_HUMBLE
+        auto description_client = std::make_shared<rclcpp::AsyncParametersClient>(
+            this->dataPtr->node_, "robot_state_publisher");
+        if (!description_client->wait_for_service(std::chrono::seconds(10)))
+        {
+            RCLCPP_ERROR(this->dataPtr->node_->get_logger(), "Robot description parameter service unavailable");
+            return;
+        }
+        auto description = description_client->get_parameters({"robot_description"});
+        if (description.wait_for(std::chrono::seconds(10)) != std::future_status::ready)
+        {
+            RCLCPP_ERROR(this->dataPtr->node_->get_logger(), "Timed out reading the robot description");
+            return;
+        }
+        const auto& robot_description = description.get().front();
+        if (robot_description.get_type() != rclcpp::ParameterType::PARAMETER_STRING ||
+            !resource_manager_->load_and_initialize_components(robot_description.as_string(), 0))
+        {
+            RCLCPP_ERROR(this->dataPtr->node_->get_logger(), "Could not initialize the robot from its description");
+            return;
+        }
+        resource_manager_->load_urdf(robot_description.as_string(), true, false);
+        options.append_parameter_override("robot_description", robot_description.as_string());
+#endif
 
         this->dataPtr->controller_manager_ = std::make_shared<controller_manager::ControllerManager>(
             std::move(resource_manager_),
@@ -422,6 +486,7 @@ namespace gz_quadruped_hardware
         this->dataPtr->controller_manager_->set_parameter(
             rclcpp::Parameter("use_sim_time", rclcpp::ParameterValue(true)));
 
+#ifndef LEGBOT_ROS_HUMBLE
         // Wait for CM to receive robot description from the topic and then initialize Resource Manager
         while (!this->dataPtr->controller_manager_->is_resource_manager_initialized())
         {
@@ -430,6 +495,7 @@ namespace gz_quadruped_hardware
                 "Waiting RM to load and initialize hardware...");
             std::this_thread::sleep_for(std::chrono::microseconds(2000000));
         }
+#endif
 
         this->dataPtr->entity_ = _entity;
     }

@@ -18,6 +18,7 @@
 #include <gz/msgs/imu.pb.h>
 #include <gz/msgs/wrench.pb.h>
 
+#include <cmath>
 #include <limits>
 #include <map>
 #include <memory>
@@ -243,9 +244,11 @@ namespace gz_quadruped_hardware
             auto& joint_info = hardware_info.joints[j];
             std::string joint_name = this->dataPtr->joints_[j].name = joint_info.name;
 
+#ifndef LEGBOT_ROS_HUMBLE
             const auto limit = hardware_info.limits.find(joint_name);
             if (limit == hardware_info.limits.end() || !limit->second.has_effort_limits) return false;
             this->dataPtr->joints_[j].effort_limit = limit->second.max_effort;
+#endif
             auto it_joint = enableJoints.find(joint_name);
             if (it_joint == enableJoints.end())
             {
@@ -261,6 +264,15 @@ namespace gz_quadruped_hardware
                 simjoint)->Data();
             this->dataPtr->joints_[j].joint_axis = _ecm.Component<sim::components::JointAxis>(
                 simjoint)->Data();
+#ifdef LEGBOT_ROS_HUMBLE
+            const auto effort_limit = this->dataPtr->joints_[j].joint_axis.Effort();
+            if (!std::isfinite(effort_limit) || effort_limit <= 0.0)
+            {
+                RCLCPP_ERROR(this->nh_->get_logger(), "Invalid effort limit for %s", joint_name.c_str());
+                return false;
+            }
+            this->dataPtr->joints_[j].effort_limit = effort_limit;
+#endif
 
             // Create joint position component if one doesn't exist
             if (!_ecm.EntityHasComponentType(
@@ -289,6 +301,7 @@ namespace gz_quadruped_hardware
             // Accept this joint and continue configuration
             RCLCPP_INFO_STREAM(this->nh_->get_logger(), "Loading joint: " << joint_name);
 
+#ifndef LEGBOT_ROS_HUMBLE
             // check if joint is mimicked
             auto it = std::find_if(
                 hardware_info.mimic_joints.begin(),
@@ -306,6 +319,7 @@ namespace gz_quadruped_hardware
                     this->dataPtr->joints_[it->mimicked_joint_index].name <<
                     "' with multiplier: " << it->multiplier << " and offset: " << it->offset);
             }
+#endif
 
             RCLCPP_INFO_STREAM(this->nh_->get_logger(), "\tState:");
 

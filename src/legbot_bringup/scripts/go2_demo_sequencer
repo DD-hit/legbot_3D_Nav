@@ -4,6 +4,7 @@ import math
 import time
 
 import rclpy
+from controller_manager_msgs.srv import ListControllers
 from nav_msgs.msg import Odometry
 from rclpy.executors import ExternalShutdownException
 try:
@@ -37,6 +38,8 @@ class DemoSequencer(Node):
         self.state = 'waiting_for_joint_states'
         self.state_started = time.monotonic()
         self.last_wait_log = 0.0
+        self.controller_client = self.create_client(ListControllers, '/controller_manager/list_controllers')
+        self.controller_request = None
 
         latched = QoSProfile(depth=1)
         latched.reliability = ReliabilityPolicy.RELIABLE
@@ -99,10 +102,22 @@ class DemoSequencer(Node):
     def publish_mode(self, mode):
         self.mode_pub.publish(Int32(data=mode))
 
+    def walking_controller_active(self):
+        if self.controller_request is None:
+            if self.controller_client.service_is_ready():
+                self.controller_request = self.controller_client.call_async(ListControllers.Request())
+            return False
+        if not self.controller_request.done():
+            return False
+        response = self.controller_request.result()
+        self.controller_request = None
+        return any(controller.name == 'rl_quadruped_controller' and controller.state == 'active'
+                   for controller in response.controller)
+
     def tick(self):
         elapsed = time.monotonic() - self.state_started
         if self.state == 'waiting_for_joint_states':
-            if self.joint_seen:
+            if self.joint_seen and self.walking_controller_active():
                 self.get_logger().info('Controller ready: requesting crouch transition')
                 self.enter('first_stand_pulse')
         elif self.state == 'first_stand_pulse':

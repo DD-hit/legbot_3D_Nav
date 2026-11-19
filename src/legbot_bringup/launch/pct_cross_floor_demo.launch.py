@@ -95,6 +95,7 @@ def setup(context):
             # radius avoids a zero-speed deadlock while remaining much
             # smaller than a stair tread/platform transition.
             'finish_dist': '0.50',
+            'min_walk_speed': '0.12',
             'odom_topic': odom_topic,
             'cloud_topic': cloud_topic,
             'sensor_pose_topic': sensor_pose_topic,

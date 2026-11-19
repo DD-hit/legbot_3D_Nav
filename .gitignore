@@ -19,6 +19,7 @@ __pycache__/
 
 # Local dependencies and generated runtime data
 /.venv-jazzy/
+/.venv-humble/
 /.deps/
 /third_party/
 /data/*

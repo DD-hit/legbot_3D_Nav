@@ -166,7 +166,7 @@ void Estimator::update()
     // Adjust the covariance based on foot contact and phase.
     for (int i(0); i < 4; ++i)
     {
-        if (ctrl_interfaces_.foot_force_state_interface_[i].get().get_optional().value() < feet_force_threshold_)
+        if (controller_common::state_value(ctrl_interfaces_.foot_force_state_interface_[i].get()) < feet_force_threshold_)
         {
             // foot not contact
             Q.block(6 + 3 * i, 6 + 3 * i, 3, 3) = large_variance_ * Eigen::MatrixXd::Identity(3, 3);
@@ -191,19 +191,19 @@ void Estimator::update()
     }
 
     Quat quat;
-    quat << ctrl_interfaces_.imu_state_interface_[0].get().get_optional().value(),
-        ctrl_interfaces_.imu_state_interface_[1].get().get_optional().value(),
-        ctrl_interfaces_.imu_state_interface_[2].get().get_optional().value(),
-        ctrl_interfaces_.imu_state_interface_[3].get().get_optional().value();
+    quat << controller_common::state_value(ctrl_interfaces_.imu_state_interface_[0].get()),
+        controller_common::state_value(ctrl_interfaces_.imu_state_interface_[1].get()),
+        controller_common::state_value(ctrl_interfaces_.imu_state_interface_[2].get()),
+        controller_common::state_value(ctrl_interfaces_.imu_state_interface_[3].get());
     rotation_ = quatToRotMat(quat);
 
-    gyro_ << ctrl_interfaces_.imu_state_interface_[4].get().get_optional().value(),
-        ctrl_interfaces_.imu_state_interface_[5].get().get_optional().value(),
-        ctrl_interfaces_.imu_state_interface_[6].get().get_optional().value();
+    gyro_ << controller_common::state_value(ctrl_interfaces_.imu_state_interface_[4].get()),
+        controller_common::state_value(ctrl_interfaces_.imu_state_interface_[5].get()),
+        controller_common::state_value(ctrl_interfaces_.imu_state_interface_[6].get());
 
-    acceleration_ << ctrl_interfaces_.imu_state_interface_[7].get().get_optional().value(),
-        ctrl_interfaces_.imu_state_interface_[8].get().get_optional().value(),
-        ctrl_interfaces_.imu_state_interface_[9].get().get_optional().value();
+    acceleration_ << controller_common::state_value(ctrl_interfaces_.imu_state_interface_[7].get()),
+        controller_common::state_value(ctrl_interfaces_.imu_state_interface_[8].get()),
+        controller_common::state_value(ctrl_interfaces_.imu_state_interface_[9].get());
 
     u_ = rotation_ * acceleration_ + g_;
     x_hat_ = A * x_hat_ + B * u_;

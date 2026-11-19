@@ -25,11 +25,20 @@ find_package(pluginlib REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(yaml_cpp_vendor REQUIRED)
 
-find_package(gz_sim_vendor REQUIRED)
-find_package(gz-sim REQUIRED)
-
-find_package(gz_plugin_vendor REQUIRED)
-find_package(gz-plugin REQUIRED)
+if("$ENV{ROS_DISTRO}" STREQUAL "humble")
+    add_compile_definitions(LEGBOT_ROS_HUMBLE)
+    find_package(gz-sim8 REQUIRED)
+    find_package(gz-plugin2 REQUIRED COMPONENTS register)
+    set(gazebo_sim_target gz-sim8::gz-sim8)
+    set(gazebo_plugin_target gz-plugin2::register)
+else()
+    find_package(gz_sim_vendor REQUIRED)
+    find_package(gz-sim REQUIRED)
+    find_package(gz_plugin_vendor REQUIRED)
+    find_package(gz-plugin REQUIRED)
+    set(gazebo_sim_target gz-sim::gz-sim)
+    set(gazebo_plugin_target gz-plugin::register)
+endif()
 
 include_directories(include)
 
@@ -38,8 +47,8 @@ add_library(${PROJECT_NAME}-system SHARED
 )
 
 target_link_libraries(${PROJECT_NAME}-system
-        gz-sim::gz-sim
-        gz-plugin::register
+        ${gazebo_sim_target}
+        ${gazebo_plugin_target}
 )
 ament_target_dependencies(${PROJECT_NAME}-system
         ament_index_cpp
@@ -62,7 +71,7 @@ ament_target_dependencies(gz_quadruped_plugins
         rclcpp
 )
 target_link_libraries(gz_quadruped_plugins
-        gz-sim::gz-sim
+        ${gazebo_sim_target}
 )
 
 ## Install

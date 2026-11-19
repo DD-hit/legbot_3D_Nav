@@ -10,6 +10,26 @@
 #include <hardware_interface/loaned_state_interface.hpp>
 #include <control_input_msgs/msg/inputs.hpp>
 
+namespace controller_common
+{
+    template<typename Interface>
+    auto read_state(const Interface& interface, int) -> decltype(interface.get_optional(), double{})
+    {
+        return interface.get_optional().value();
+    }
+
+    template<typename Interface>
+    double read_state(const Interface& interface, long)
+    {
+        return interface.get_value();
+    }
+
+    inline double state_value(const hardware_interface::LoanedStateInterface& interface)
+    {
+        return read_state(interface, 0);
+    }
+}
+
 struct CtrlInterfaces
 {
     std::vector<std::reference_wrapper<hardware_interface::LoanedCommandInterface>>

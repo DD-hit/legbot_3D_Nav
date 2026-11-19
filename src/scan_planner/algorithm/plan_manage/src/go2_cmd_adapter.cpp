@@ -443,7 +443,7 @@ void cmdCallback(const legbot::TimerEvent &)
   const bool terminal_approach =
       have_goal_position && goal_xy_distance <= std::max(finish_dist, goal_slowdown_distance);
   const bool needs_minimum_speed =
-      !reached_end && !terminal_approach && effective_min_walk_speed > 0.0 &&
+      !reached_end && effective_min_walk_speed > 0.0 &&
       walk_speed > 0.005 && walk_speed < effective_min_walk_speed;
   if (needs_minimum_speed)
     vel_world *= effective_min_walk_speed / walk_speed;
@@ -465,7 +465,7 @@ void cmdCallback(const legbot::TimerEvent &)
         (goal_xy_distance - finish_dist) /
             (goal_slowdown_distance - finish_dist),
         0.0, 1.0);
-    vel_world = clampNorm(vel_world, max_vx * terminal_scale);
+    vel_world = clampNorm(vel_world, std::max(max_vx * terminal_scale, effective_min_walk_speed));
   }
 
   double yaw_des = estimateDesiredYaw(t_near, t_look, pos_near, pos_look);
