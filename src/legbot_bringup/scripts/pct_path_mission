@@ -4,6 +4,7 @@
 import json
 import math
 import sys
+import time
 import numpy as np
 from scipy.spatial.transform import Rotation
 
@@ -83,6 +84,8 @@ class PctPathMission(Node):
         self.use_map_localization = self.declare_parameter('use_map_localization', False).value
         self.tasks = None
         self.web = None
+        self.dependency_error = ''
+        self.localizer_heartbeat = float('-inf')
 
         if not self.use_map_localization:
             self.building = (
@@ -143,6 +146,7 @@ class PctPathMission(Node):
             from waypoint_tasks import WaypointTasks
             from navigation_web import NavigationWeb
             self.tasks = WaypointTasks(self, latched)
+            self.create_subscription(Bool, '/localization/ready', self.on_localizer_heartbeat, latched)
             self.web = NavigationWeb(self, self.declare_parameter('web_port', 8765).value)
         self.get_logger().info(
             'Waiting for PCT path on %s and navigation readiness on %s' %
@@ -167,6 +171,8 @@ class PctPathMission(Node):
                 self.tasks.stop('failed', '规划器返回了无效坐标')
             return
         self.raw_path = msg
+        if self.tasks:
+            self.tasks.mark_time('global_path')
         self.get_logger().info('Received Building-local PCT path with %d poses' %
                                len(msg.poses))
         self.start_if_ready()
@@ -187,6 +193,11 @@ class PctPathMission(Node):
 
     def on_ready(self, msg):
         self.ready = bool(msg.data)
+        if not self.ready and self.use_map_localization and self.started:
+            if self.tasks and self.tasks.active:
+                self.tasks.stop('failed', '运动控制未就绪，已撤销本段导航')
+            else:
+                self.cancel_localized_mission()
         self.start_if_ready()
 
     def on_localization(self, msg):
@@ -251,13 +262,30 @@ class PctPathMission(Node):
 
     def publish_permit(self):
         permit = Header()
-        if self.plan_accepted and not self.completed and self.fix_stamp_ns is not None:
+        if self.ready and not self.dependency_error and self.plan_accepted and not self.completed and self.fix_stamp_ns is not None:
             permit.frame_id = self.pct_frame_id
             permit.stamp = Time(nanoseconds=self.fix_stamp_ns).to_msg()
         self.permit_pub.publish(permit)
 
+    def on_localizer_heartbeat(self, msg):
+        self.localizer_heartbeat = time.monotonic()
+
+    def check_dependencies(self):
+        if time.monotonic() - self.localizer_heartbeat > 2.0:
+            return '定位节点心跳超时'
+        if not self.ready:
+            return '运动控制未就绪'
+        if self.tasks.route_pub.get_subscription_count() == 0:
+            return '全局规划节点离线'
+        if self.count_publishers('/scan/planning/bspline') == 0:
+            return '局部规划节点离线'
+        return ''
+
     def tick_localized(self):
         if self.tasks:
+            self.dependency_error = self.check_dependencies()
+            if self.dependency_error and self.tasks.active:
+                self.tasks.stop('failed', self.dependency_error + '，运动许可已撤销')
             self.tasks.tick()
         self.publish_permit()
         self.start_if_ready()
@@ -266,6 +294,7 @@ class PctPathMission(Node):
         if not self.started or self.completed or self.plan_accepted:
             return
         if ((msg.start_time.sec, msg.start_time.nanosec) < self.goal_stamp
+                or (msg.goal_stamp.sec, msg.goal_stamp.nanosec) != self.goal_stamp
                 or msg.order <= 0 or len(msg.pos_pts) <= msg.order
                 or len(msg.knots) != len(msg.pos_pts) + msg.order + 1
                 or not all(math.isfinite(knot) for knot in msg.knots)):

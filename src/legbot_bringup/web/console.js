@@ -396,7 +396,7 @@ function update() {
     byId('pose').textContent += `\n初值修正 ${Math.hypot(loc.pose[0] - state.seed[0], loc.pose[1] - state.seed[1]).toFixed(2)} m / ${degrees(Math.atan2(Math.sin(delta), Math.cos(delta)))}`;
   }
   for (const id of ['seed', 'single', 'multi']) byId(id).disabled = locked || !online;
-  byId('seed').disabled = locked || !online || state.standing === false || ['COLLECTING', 'MATCHING'].includes(loc.state);
+  byId('seed').disabled = locked || !online || state.standing === false;
   if (stairPicker.open && (locked || !online || (tool === 'seed' && byId('seed').disabled))) stairPicker.close();
   byId('seed').setAttribute('aria-pressed', tool === 'seed');
   byId('seed').textContent = tool === 'seed' ? '取消给定位姿' : '拖动给定初始位姿';
@@ -435,7 +435,7 @@ function update() {
       remaining = `终点附近 · 位置差 ${(distance * 100).toFixed(0)} cm · 朝向差 ${degrees(Math.abs(Math.atan2(Math.sin(delta), Math.cos(delta))))}`;
     }
   }
-  byId('reason').textContent = [failedSegment, task.reason, remaining].filter(Boolean).join(' · ');
+  byId('reason').textContent = [failedSegment, task.reason || state.dependency_error, remaining].filter(Boolean).join(' · ');
   const key = JSON.stringify([draft, task, locked]);
   if (key !== listKey) {
     listKey = key;
@@ -508,9 +508,11 @@ async function command(path, payload) {
     update();
   }
 }
-const events = new EventSource('/api/events');
+const events = new EventSource('/api/events?delta=1');
 events.onmessage = (e) => {
-  state = JSON.parse(e.data);
+  const next = JSON.parse(e.data);
+  if (!('route' in next)) next.route = state.route || [];
+  state = next;
   if (previousFix !== undefined && (state.localization?.state !== 'LOCALIZED' || state.localization?.request_id !== previousFix)) previousFix = undefined;
   if (state.task?.id === pendingTask) pendingTask = null;
   online = true;

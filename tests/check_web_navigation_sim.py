@@ -10,6 +10,8 @@ from urllib.request import Request, urlopen
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--soak-seconds', type=float, default=0.0,
+                        help='repeat localized entrance-to-upper round trips for this wall-clock duration')
     parser.add_argument('--url', default='http://127.0.0.1:8765')
     parser.add_argument('--upper', action='store_true', help='use the longer upper-platform round trip')
     parser.add_argument('--entry-repair', action='store_true', help='walk to two verified former entry-layer holes')
@@ -54,8 +56,12 @@ def main():
     call('seed', dict(**entry, yaw=0.05))
     state = wait(lambda state: state['ready'], 40)
     assert state['task']['phase'] == 'idle' and not state['route']
-    if args.round_trip_only:
-        terminal(submit([upper, entry]), 'succeeded', 2, 1500)
+    if args.round_trip_only or args.soak_seconds > 0:
+        deadline = time.monotonic() + args.soak_seconds
+        while True:
+            terminal(submit([upper, entry]), 'succeeded', 2, 1500)
+            if time.monotonic() >= deadline:
+                break
         return
     terminal(submit([nearby]), 'succeeded', 1)
     if args.entry_repair:

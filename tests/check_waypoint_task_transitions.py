@@ -25,6 +25,7 @@ def check():
     node = Node('waypoint_task_test')
     try:
         node.ready = True
+        node.dependency_error = ''
         node.pct_frame_id, node.base_frame = 'survey_map', 'test_base'
         node.web = None
         node.fix_stamp_ns = 1
@@ -78,6 +79,14 @@ def check():
         tasks.tick()
         assert not tasks.active and tasks.state['phase'] == 'canceled' and tasks.state['index'] == 0
         handle.canceled.assert_called_once()
+        handle.is_cancel_requested = False
+        tasks.accept(handle)
+        tasks.stop('replan', '等待重新规划')
+        tasks.stop_time -= 36
+        node.initial_odom = None
+        tasks.tick()
+        assert not tasks.active and tasks.state['phase'] == 'failed'
+        node.initial_odom = (0., 0., 0.4, 0.)
         print('PASS waypoint stop acknowledgments, fresh odometry, bounded retry, localization loss and cancellation')
 
         handle.is_cancel_requested = False
@@ -93,6 +102,7 @@ def check():
         web.localization = {'state': 'LOCALIZED'}
         web.outside_fix = web.seed_pending = web.seed = None
         web.pending, web.condition, web.snapshot = queue.Queue(), threading.Condition(), b''
+        web.route_source, web.route_json, web.route_version = None, b'[]', 0
         web.update()
         assert node.buffer.lookup_transform.call_args.args[:2] == ('survey_map', 'test_base')
         assert tasks.state['phase'] == 'stopping' and json.loads(web.snapshot)['localization']['state'] == 'LOST'

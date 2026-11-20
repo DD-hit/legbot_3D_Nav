@@ -15,6 +15,7 @@ from scipy.ndimage import binary_closing, convolve, label, maximum_filter, minim
 from scipy.spatial import cKDTree
 
 from build_floor_display import build_display, FloorMap, read_pcd, root
+from map_match_core import file_hash, write_reference_index
 from floor_surface import reconstruct, reconstruct_tiles
 
 tomography = root / 'src/pct_planner/tomography'
@@ -110,6 +111,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('pcd', type=Path)
     parser.add_argument('output', type=Path)
+    parser.add_argument('--localization-pcd', type=Path, help='localization reference when planning uses filtered samples')
     parser.add_argument('--profile', type=Path, required=True, help='map id, frame and nominal floor levels/names')
     parser.add_argument('--infer-isolated', action='store_true', help='infer isolated cells on flat platforms from surrounding PCD samples')
     args = parser.parse_args()
@@ -167,7 +169,10 @@ def main():
     with tempfile.TemporaryDirectory(dir=destination.parent) as temporary:
         bundle = Path(temporary) / 'bundle'
         bundle.mkdir()
-        shutil.copyfile(args.pcd, bundle/'source.pcd')
+        source = bundle/'source.pcd'
+        shutil.copyfile(args.localization_pcd or args.pcd, source)
+        digest = file_hash(source)
+        write_reference_index(source, digest)
         with (bundle/'planning.pickle').open('wb') as stream:
             pickle.dump(data, stream, protocol=4)
         version_hash = hashlib.sha256(arrays.tobytes())
@@ -183,7 +188,7 @@ def main():
         if bands is not None:
             manifest['floor_ranges'] = bands.tolist()
         (bundle/'map.yaml').write_text(yaml.safe_dump(manifest, allow_unicode=True, sort_keys=False))
-        report = dict(source_sha256=hashlib.sha256((bundle/'source.pcd').read_bytes()).hexdigest(), points=len(points),
+        report = dict(source_sha256=digest, planning_source_sha256=file_hash(args.pcd) if args.localization_pcd else digest, points=len(points),
                       version=version, resolution=resolution, slices=arrays.shape[1], inferred=bool(args.infer_isolated),
                       isolated_candidates=samples.tolist(), stairs=stairs,
                       selectable_cells=[int(allowed.sum()) for _, allowed in atlas.surfaces])

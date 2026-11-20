@@ -51,6 +51,9 @@ class NavigationWeb:
         self.pending = queue.Queue(maxsize=32)
         self.condition = threading.Condition()
         self.snapshot = b'{}'
+        self.route_source = None
+        self.route_json = b'[]'
+        self.route_version = 0
         self.online = True
         self.seed_pub = mission.create_publisher(PoseWithCovarianceStamped, '/initialpose', 10)
         action = '/navigation/follow_waypoints'
@@ -97,14 +100,21 @@ class NavigationWeb:
             self.outside_fix = mission.fix_stamp_ns
             mission.tasks.stop('failed', '机身估计已超出地图，请重新定位')
         outside = mission.fix_stamp_ns is not None and self.outside_fix == mission.fix_stamp_ns
-        ready = mission.ready and pose is not None and not outside and self.seed_pending is None
-        route = [coordinates(p) for p in mission.raw_path.poses] if mission.raw_path and mission.tasks.active else []
+        ready = mission.ready and not mission.dependency_error and pose is not None and not outside and self.seed_pending is None
+        route_source = mission.raw_path if mission.tasks.active else None
+        route_changed = self.route_source is not route_source
+        route_version = self.route_version + int(route_changed)
+        if route_changed:
+            route = [coordinates(p) for p in route_source.poses] if route_source else []
+            route_json = json.dumps(route, separators=(',', ':'), allow_nan=False).encode()
         snapshot = dict(localization={k: self.localization[k] for k in ('state', 'reason', 'pose', 'request_id', 'seed_stamp_ns', 'automatic') if k in self.localization},
-                        standing=mission.ready, ready=ready, seed=self.seed, pose=pose, task=mission.tasks.state, route=route)
+                        standing=mission.ready, ready=ready, dependency_error=mission.dependency_error, seed=self.seed, pose=pose, task=mission.tasks.state, route_version=route_version)
         if outside:
             snapshot.update(localization={'state': 'LOST', 'reason': '机身估计已超出地图，请重新定位'}, pose=None)
         data = json.dumps(snapshot, ensure_ascii=False, allow_nan=False).encode()
         with self.condition:
+            if route_changed:
+                self.route_source, self.route_json, self.route_version = route_source, route_json, route_version
             if data != self.snapshot:
                 self.snapshot = data
                 self.condition.notify_all()
@@ -114,8 +124,6 @@ class NavigationWeb:
         if not isinstance(body, dict):
             raise ValueError('请求格式无效')
         if path == '/api/seed':
-            if self.seed_pending is not None:
-                raise ValueError('正在处理本次初始定位，请等待匹配结果')
             if mission.tasks.active or self.seed_pub.get_subscription_count() == 0 or not mission.ready:
                 raise ValueError('请等待机器狗就绪并结束当前任务')
             xyz = self.atlas.point(body, False)
@@ -124,7 +132,7 @@ class NavigationWeb:
                 raise ValueError('朝向无效')
             message = PoseWithCovarianceStamped()
             message.header.frame_id = mission.pct_frame_id
-            message.header.stamp = mission.get_clock().now().to_msg()
+            message.header.stamp = mission.next_goal_stamp()
             pose = message.pose.pose
             pose.position.x, pose.position.y, pose.position.z = xyz
             pose.orientation.z, pose.orientation.w = math.sin(yaw/2), math.cos(yaw/2)
@@ -203,19 +211,27 @@ class NavigationWeb:
                 if path == '/api/map':
                     return self.send(200, 'application/json', app.atlas.payload)
                 if path == '/api/state':
-                    return self.send(200, 'application/json', app.snapshot)
+                    with app.condition:
+                        data = app.snapshot[:-1] + (b',' if len(app.snapshot) > 2 else b'') + b'"route":' + app.route_json + b'}'
+                    return self.send(200, 'application/json', data)
                 if path == '/api/events':
                     self.send_response(200)
                     self.send_header('Content-Type', 'text/event-stream')
                     self.send_header('Cache-Control', 'no-store')
                     self.end_headers()
                     previous = None
+                    sent_route = None
                     try:
                         while app.online:
                             with app.condition:
                                 app.condition.wait_for(lambda: previous != app.snapshot or not app.online, timeout=3)
                                 current = app.snapshot
-                            self.wfile.write(b'data: ' + current + b'\n\n' if current != previous else b': ping\n\n')
+                                version, route = app.route_version, app.route_json
+                            event = current
+                            if current != previous and (sent_route != version or self.path != '/api/events?delta=1'):
+                                event = current[:-1] + (b',' if len(current) > 2 else b'') + b'"route":' + route + b'}'
+                                sent_route = version
+                            self.wfile.write(b'data: ' + event + b'\n\n' if current != previous else b': ping\n\n')
                             self.wfile.flush()
                             previous = current
                     except (BrokenPipeError, ConnectionResetError):

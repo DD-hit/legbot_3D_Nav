@@ -51,6 +51,8 @@ double traj_duration = 0.0;
 double last_nearest_time = 0.0;
 int traj_id = 0;
 legbot::Time latest_goal_time;
+bool require_route_stamp = false;
+scan_planner::msg::Bspline::ConstSharedPtr pending_spline;
 legbot::Time latest_traj_start;
 bool have_goal_time = false;
 bool have_goal_position = false;
@@ -133,6 +135,7 @@ void loadParams(const legbot::NodeHandle &nh)
   nh.param("kp_yaw", kp_yaw, 1.20);
   nh.param("max_vx", max_vx, 0.50);
   nh.param("max_vy", max_vy, 0.25);
+  nh.param("require_route_stamp", require_route_stamp, false);
   nh.param("max_vyaw", max_vyaw, 1.00);
   nh.param("finish_dist", finish_dist, 0.25);
   nh.param("finish_dist_z", finish_dist_z, 0.20);
@@ -313,6 +316,8 @@ void publishExecutionFrozen(bool frozen)
   execution_frozen_pub.publish(msg);
 }
 
+void bsplineCallback(const scan_planner::msg::Bspline::ConstSharedPtr &msg);
+
 void goalCallback(const geometry_msgs::msg::PoseStamped::ConstSharedPtr &msg)
 {
   if (!msg)
@@ -342,13 +347,19 @@ void goalCallback(const geometry_msgs::msg::PoseStamped::ConstSharedPtr &msg)
   // driving the preceding B-spline while SCAN is computing (or rejecting)
   // the replacement trajectory.  This also makes an occupied/invalid click
   // fail safe: the quadruped holds position until a fresh B-spline arrives.
-  if (latest_traj_start.isZero() || latest_traj_start < latest_goal_time)
+  if (require_route_stamp || latest_traj_start.isZero() || latest_traj_start < latest_goal_time)
   {
     receive_traj = false;
     last_nearest_time = 0.0;
     publishExecutionFrozen(false);
     publishStop();
     ROS_INFO("[scan_go2_cmd_adapter] new goal received; previous trajectory stopped.");
+  }
+  if (pending_spline && pending_spline->goal_stamp == msg->header.stamp)
+  {
+    auto matching = pending_spline;
+    pending_spline.reset();
+    bsplineCallback(matching);
   }
 }
 
@@ -362,6 +373,14 @@ void bsplineCallback(const scan_planner::msg::Bspline::ConstSharedPtr &msg)
   }
 
   const legbot::Time candidate_start(msg->start_time);
+  if (require_route_stamp && (!have_goal_time || msg->goal_stamp != latest_goal_msg.header.stamp))
+  {
+    const legbot::Time route_time(msg->goal_stamp);
+    if (!route_time.isZero() && (!have_goal_time || latest_goal_time < route_time) &&
+        (!pending_spline || !(route_time < legbot::Time(pending_spline->goal_stamp))))
+      pending_spline = msg;
+    return;
+  }
   if (have_goal_time && !candidate_start.isZero() && candidate_start < latest_goal_time)
   {
     ROS_WARN("[scan_go2_cmd_adapter] Ignore trajectory older than the latest goal.");

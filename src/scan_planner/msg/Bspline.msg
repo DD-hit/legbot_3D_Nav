@@ -1,6 +1,7 @@
 int32 order
 int64 traj_id
 builtin_interfaces/Time start_time
+builtin_interfaces/Time goal_stamp
 
 float64[] knots
 geometry_msgs/Point[] pos_pts

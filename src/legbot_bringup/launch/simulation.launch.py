@@ -1,12 +1,13 @@
 """GO2/HIMLoco on Gazebo Harmonic. Launching this file starts simulation."""
 import os
+import tempfile
+from pathlib import Path
 import xacro
 from ament_index_python.packages import get_package_share_directory as share
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, OpaqueFunction, IncludeLaunchDescription, RegisterEventHandler, SetEnvironmentVariable, EmitEvent
+from launch.actions import DeclareLaunchArgument, OpaqueFunction, ExecuteProcess, RegisterEventHandler, SetEnvironmentVariable, EmitEvent
 from launch.events import Shutdown
-from launch.event_handlers import OnProcessExit
-from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.event_handlers import OnProcessExit, OnShutdown
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
@@ -43,6 +44,9 @@ def setup(context):
                                                **{key: cfg(key) for key in ('lidar_x','lidar_y','lidar_z','lidar_roll','lidar_pitch','lidar_yaw')},
                                                'controller_config': os.path.join(share('go2_description'), 'config', controller_file)}).toxml()
     world = cfg('world')
+    description_dir = tempfile.TemporaryDirectory(prefix='legbot-sim-')
+    description_path = Path(description_dir.name) / 'robot.urdf'
+    description_path.write_text(description, encoding='utf-8')
     gz_args = ['-r', '-v', '3']
     if cfg('gui') == 'false':
         gz_args.append('-s')
@@ -97,8 +101,10 @@ def setup(context):
     return [
         SetEnvironmentVariable('GZ_SIM_RESOURCE_PATH', resource_path),
         SetEnvironmentVariable('LD_LIBRARY_PATH', library_path),
-        IncludeLaunchDescription(PythonLaunchDescriptionSource(os.path.join(share('ros_gz_sim'), 'launch/gz_sim.launch.py')),
-                                 launch_arguments={'gz_args': ' '.join(gz_args)}.items()),
+        RegisterEventHandler(OnShutdown(on_shutdown=[OpaqueFunction(function=lambda _: description_dir.cleanup())])),
+        ExecuteProcess(cmd=['gz', 'sim', *gz_args], output='screen',
+                       additional_env={'LEGBOT_SIM_DESCRIPTION_FILE': str(description_path)},
+                       on_exit=[EmitEvent(event=Shutdown(reason='Gazebo exited'))]),
         Node(package='robot_state_publisher', executable='robot_state_publisher',
              parameters=[{'robot_description': description, 'use_sim_time': True}],
              remappings=[('robot_description', '/go2/robot_description')]),

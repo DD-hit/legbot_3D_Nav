@@ -136,6 +136,7 @@ def setup(context):
             'navi_mode': '3',
             'global_path_topic': '/pct_path',
             'cancel_on_empty_path': 'true' if map_localized else 'false',
+            'require_route_stamp': 'true' if map_localized else 'false',
             # pct_plan also declares a generic frame_id argument.  Pass this
             # explicitly so the include cannot leak building_pct into SCAN's
             # grid-map and marker headers.

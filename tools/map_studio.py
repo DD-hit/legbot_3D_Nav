@@ -1,7 +1,6 @@
 """Local web workspace for importing point clouds and editing PCT maps."""
 
 import argparse
-import hashlib
 import json
 import os
 import pickle
@@ -22,6 +21,7 @@ import numpy as np
 import yaml
 
 from floor_review import read_selection
+from map_match_core import file_hash
 from studio_geometry import (
     FloorMap,
     checked_edit,
@@ -83,6 +83,8 @@ def generate(project, rows, filtered):
 
     def work():
         try:
+            source = project / 'localization.pcd'
+            source = source if source.exists() else project / 'original.pcd'
             with BUILD, (generation / "build.log").open("w") as log:
                 subprocess.run(
                     [
@@ -90,6 +92,7 @@ def generate(project, rows, filtered):
                         str(TOOLS / "build_pcd_map.py"),
                         str(project / ("filtered.pcd" if filtered else "finite.pcd")),
                         str(generation / "base"),
+                        '--localization-pcd', str(source),
                         "--profile",
                         str(generation / "profile.yaml"),
                     ],
@@ -98,13 +101,9 @@ def generate(project, rows, filtered):
                     stderr=subprocess.STDOUT,
                 )
             base = generation / "base"
-            source = project / "localization.pcd"
-            source = source if source.exists() else project / "original.pcd"
             (base / "source.pcd").unlink()
             os.link(source, base / "source.pcd")
             report = read_json(base / "report.json")
-            report["planning_source_sha256"] = report["source_sha256"]
-            report["source_sha256"] = file_hash(source)
             report["original_sha256"] = file_hash(project / "original.pcd")
             report["filter_isolated"] = filtered
             save_json(base / "report.json", report)
@@ -149,14 +148,6 @@ def generate(project, rows, filtered):
                 )
 
     threading.Thread(target=work, daemon=True).start()
-
-
-def file_hash(path):
-    with path.open("rb") as stream:
-        digest = hashlib.sha256()
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 def atlas_payload(bundle, floors):

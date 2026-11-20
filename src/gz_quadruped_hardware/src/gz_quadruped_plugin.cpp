@@ -18,6 +18,9 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <cstdlib>
+#include <fstream>
+#include <iterator>
 #include <string>
 #include <thread>
 #include <utility>
@@ -444,28 +447,35 @@ namespace gz_quadruped_hardware
         options.append_parameter_override("use_sim_time", true);  // enable sim time for controller manager
 
 #ifdef LEGBOT_ROS_HUMBLE
-        auto description_client = std::make_shared<rclcpp::AsyncParametersClient>(
-            this->dataPtr->node_, "robot_state_publisher");
-        if (!description_client->wait_for_service(std::chrono::seconds(10)))
+        std::string robot_description;
+        if (const char *path = std::getenv("LEGBOT_SIM_DESCRIPTION_FILE"))
         {
-            RCLCPP_ERROR(this->dataPtr->node_->get_logger(), "Robot description parameter service unavailable");
-            return;
+            std::ifstream input(path);
+            robot_description.assign(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
         }
-        auto description = description_client->get_parameters({"robot_description"});
-        if (description.wait_for(std::chrono::seconds(10)) != std::future_status::ready)
+        else
         {
-            RCLCPP_ERROR(this->dataPtr->node_->get_logger(), "Timed out reading the robot description");
-            return;
+            auto client = std::make_shared<rclcpp::AsyncParametersClient>(this->dataPtr->node_, "robot_state_publisher");
+            if (!client->wait_for_service(std::chrono::seconds(10)))
+            {
+                RCLCPP_ERROR(this->dataPtr->node_->get_logger(), "Robot description parameter service unavailable");
+                return;
+            }
+            auto description = client->get_parameters({"robot_description"});
+            if (description.wait_for(std::chrono::seconds(10)) == std::future_status::ready)
+            {
+                auto parameters = description.get();
+                if (!parameters.empty() && parameters.front().get_type() == rclcpp::ParameterType::PARAMETER_STRING)
+                    robot_description = parameters.front().as_string();
+            }
         }
-        const auto& robot_description = description.get().front();
-        if (robot_description.get_type() != rclcpp::ParameterType::PARAMETER_STRING ||
-            !resource_manager_->load_and_initialize_components(robot_description.as_string(), 0))
+        if (robot_description.empty() || !resource_manager_->load_and_initialize_components(robot_description, 0))
         {
             RCLCPP_ERROR(this->dataPtr->node_->get_logger(), "Could not initialize the robot from its description");
             return;
         }
-        resource_manager_->load_urdf(robot_description.as_string(), true, false);
-        options.append_parameter_override("robot_description", robot_description.as_string());
+        resource_manager_->load_urdf(robot_description, true, false);
+        options.append_parameter_override("robot_description", robot_description);
 #endif
 
         this->dataPtr->controller_manager_ = std::make_shared<controller_manager::ControllerManager>(

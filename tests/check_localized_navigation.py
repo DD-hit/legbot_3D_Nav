@@ -110,10 +110,17 @@ def run():
         assert not mission.plan_accepted
         spline.pos_pts = [Point(), Point(x=0.04)]
         mission.on_plan(spline)
+        assert not mission.plan_accepted
+        spline.goal_stamp = spline.start_time
+        mission.on_plan(spline)
         assert mission.plan_accepted
         permit = mission.permit_pub.publish.call_args.args[0]
         adapter.on_permit(permit)
         check_command(True)
+        adapter.on_permit(Header())
+        adapter.on_permit(permit)
+        adapter.publish()
+        assert adapter.pub.publish.call_args.args[0].ly == 0.0
         adapter.last_permit -= adapter.navigation_timeout + 1.
         check_command(False)
 

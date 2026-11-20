@@ -1,4 +1,5 @@
 #include "plan_env/grid_map.h"
+#include <plan_env/callback_timing.h>
 #include <algorithm>
 #include <cmath>
 #include <string>
@@ -781,6 +782,8 @@ void GridMap::updateOccupancyCallback(const legbot::TimerEvent & /*event*/)
 {
   if (!md_.occ_need_update_)
     return;
+  static thread_local scan_planner::TimingWindow timing{"occupancy_update", 50.};
+  scan_planner::CallbackTiming measure(timing);
 
   /* update occupancy */
   // legbot::Time t1, t2, t3, t4;

@@ -1,12 +1,13 @@
 """Exercise initialization, unobservable scans, occluded hits and duplicate rooms."""
 import math
 import sys
+import tempfile
 from pathlib import Path
 
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src/legbot_bringup/scripts'))
-from map_match_core import LocalizationMap, angle_delta, rotation
+from map_match_core import LocalizationMap, angle_delta, file_hash, read_reference_index, reference_index_path, rotation, write_reference_index
 
 
 def surface(fixed_axis, coordinate, bounds):
@@ -34,6 +35,21 @@ def main():
     bounds = [(-2.4, 3.1), (-1.8, 2.8), (0.0, 2.3)]
     walls = room(bounds)
     reference = LocalizationMap(walls)
+    with tempfile.TemporaryDirectory() as directory:
+        source_file = Path(directory) / 'room.pcd'
+        with source_file.open('wb') as stream:
+            stream.write(f'FIELDS x y z\nSIZE 4 4 4\nTYPE F F F\nPOINTS {len(walls)}\nDATA binary\n'.encode())
+            walls.astype('<f4').tofile(stream)
+        write_reference_index(source_file, file_hash(source_file))
+        cached = read_reference_index(source_file, .14)
+        np.testing.assert_array_equal(cached[0], reference.points)
+        np.testing.assert_array_equal(cached[1], reference.normals)
+        assert read_reference_index(source_file, .2) is None
+        with source_file.open('ab') as stream:
+            stream.write(b'\n')
+        assert read_reference_index(source_file, .14) is None
+        reference_index_path(source_file).write_bytes(b'truncated')
+        np.testing.assert_array_equal(LocalizationMap(source_file).points, reference.points)
     truth = np.array([-0.12, 0.06, 0.68, math.radians(168.0)])
     source = observation(walls, truth, random)
     validation = observation(walls, truth, random)
@@ -45,6 +61,7 @@ def main():
     single_plane = LocalizationMap(plane)
     assert single_plane.tracking_error(plane, np.zeros(3), np.zeros(3), np.eye(3)) is None
     seed = truth + [1.5, -0.50, 0.12, math.radians(38.0)]
+    assert reference.match(source, seed, cancelled=lambda: True)['reason'] == 'SUPERSEDED'
     outcome = reference.match(source, seed, validation_xyz=validation)
     assert outcome['success'], outcome
     assert np.linalg.norm(np.array(outcome['pose'][:3]) - truth[:3]) < 0.12, outcome

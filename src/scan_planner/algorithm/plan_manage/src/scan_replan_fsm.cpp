@@ -1,9 +1,11 @@
 
 #include <plan_manage/scan_replan_fsm.h>
+#include <plan_env/callback_timing.h>
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <std_msgs/msg/int64.hpp>
+#include <scan_planner/msg/segment_status.hpp>
 
 namespace scan_planner
 {
@@ -26,6 +28,8 @@ namespace scan_planner
 
     /*  fsm param  */
     nh.param("fsm/navi_mode", navi_mode_, -1);
+    if (navi_mode_ == NAVI_MODE::REFERENCE_PATH)
+      segment_status_pub_ = nh.advertise<scan_planner::msg::SegmentStatus>("/scan/segment_status", 10);
     nh.param("fsm/thresh_replan", replan_thresh_, -1.0);
     nh.param("fsm/thresh_no_replan", no_replan_thresh_, -1.0);
     nh.param("fsm/finish_dist", finish_dist_, 0.35);
@@ -484,6 +488,7 @@ namespace scan_planner
     }
 
     reference_goal_ = msg->poses.back();
+    segment_reason_.clear();
     const auto &rotation = reference_goal_.pose.orientation;
     check_terminal_turn_ = respect_goal_heading_ && std::hypot(rotation.z, rotation.w) > 0.99;
     reference_goal_.header = msg->header;
@@ -697,6 +702,17 @@ namespace scan_planner
     marker.pose.position.y = rear(1);
     marker.pose.position.z = rear(2);
     self_inflation_pub_.publish(marker);
+  }
+
+  void SCANReplanFSM::reportSegment(const std::string &reason)
+  {
+    if (navi_mode_ != NAVI_MODE::REFERENCE_PATH || reason == segment_reason_)
+      return;
+    segment_reason_ = reason;
+    scan_planner::msg::SegmentStatus status;
+    status.goal_stamp = reference_goal_.header.stamp;
+    status.reason = reason;
+    segment_status_pub_.publish(status);
   }
 
   void SCANReplanFSM::changeFSMExecState(FSM_EXEC_STATE new_state, string pos_call)
@@ -1153,6 +1169,8 @@ namespace scan_planner
 
     if (exec_state_ != EXEC_TRAJ || !have_odom_ || info->start_time_.toSec() < 1e-5)
       return;
+    static thread_local TimingWindow timing{"collision_check", 50.};
+    CallbackTiming measure(timing);
 
     /* ---------- check trajectory ---------- */
     constexpr double time_step = 0.01;
@@ -1175,6 +1193,7 @@ namespace scan_planner
           if (sample_t - t_cur < emergency_time_) // 0.8s of emergency time
           {
             ROS_WARN("Suddenly discovered obstacles. emergency stop! time=%f", sample_t - t_cur);
+            reportSegment("TRAJECTORY_BLOCKED");
             changeFSMExecState(EMERGENCY_STOP, "SAFETY");
           }
           else
@@ -1194,6 +1213,8 @@ namespace scan_planner
 
   bool SCANReplanFSM::callReboundReplan(bool flag_use_poly_init, bool flag_randomPolyTraj)
   {
+    static thread_local TimingWindow timing{"local_replan", 50.};
+    CallbackTiming measure(timing);
 
     getLocalTarget();
 
@@ -1204,6 +1225,7 @@ namespace scan_planner
             local_target_pt_, estimateYawFromSegment(odom_pos_, local_target_pt_)) != 0)
     {
       ROS_WARN_THROTTLE(1.0, "No collision-free local target; defer replan until the map clears.");
+      reportSegment("LOCAL_TARGET_BLOCKED");
       return false;
     }
 
@@ -1214,6 +1236,8 @@ namespace scan_planner
         have_new_target_ || flag_use_poly_init, flag_randomPolyTraj, precise_final);
     if (plan_success)
       have_new_target_ = false;
+
+    reportSegment(plan_success ? "TRACKING" : "LOCAL_PLAN_UNAVAILABLE");
 
     cout << "final_plan_success=" << plan_success << endl;
 
@@ -1226,6 +1250,7 @@ namespace scan_planner
       scan_planner::msg::Bspline bspline;
       bspline.order = 3;
       bspline.start_time = info->start_time_;
+      bspline.goal_stamp = reference_goal_.header.stamp;
       bspline.traj_id = info->traj_id_;
 
       Eigen::MatrixXd pos_pts = info->position_traj_.getControlPoint();
@@ -1266,6 +1291,7 @@ namespace scan_planner
     scan_planner::msg::Bspline bspline;
     bspline.order = 3;
     bspline.start_time = info->start_time_;
+    bspline.goal_stamp = reference_goal_.header.stamp;
     bspline.traj_id = info->traj_id_;
 
     Eigen::MatrixXd pos_pts = info->position_traj_.getControlPoint();

@@ -7,6 +7,7 @@ from nav2_msgs.action import FollowWaypoints
 from nav_msgs.msg import Path
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from rclpy.task import Future
+from scan_planner.msg import SegmentStatus
 from std_msgs.msg import Bool, String
 
 
@@ -37,6 +38,7 @@ class WaypointTasks:
         self.leg_pub = mission.create_publisher(Bool, '/scan/leg_complete', latched)
         self.leg_pub.publish(Bool(data=False))
         mission.create_subscription(PoseStamped, '/scan/terminal_turn_clear', self.on_turn_clear, 10)
+        mission.create_subscription(SegmentStatus, '/scan/segment_status', self.on_segment_status, 10)
         self.server = ActionServer(mission, FollowWaypoints, '/navigation/follow_waypoints',
                                    self.execute, goal_callback=self.validate,
                                    handle_accepted_callback=self.accept,
@@ -53,7 +55,7 @@ class WaypointTasks:
     def validate(self, goal):
         mission = self.mission
         odom_age = mission.get_clock().now().nanoseconds - getattr(mission, 'odom_stamp_ns', 0)
-        if (self.active or mission.fix_stamp_ns is None or not mission.ready or not 0 <= odom_age <= 2_000_000_000
+        if (self.active or mission.dependency_error or mission.fix_stamp_ns is None or not mission.ready or not 0 <= odom_age <= 2_000_000_000
                 or (mission.web and (mission.web.seed_pending is not None or mission.web.outside_fix == mission.fix_stamp_ns))
                 or not 1 <= len(goal.poses) <= 100):
             return GoalResponse.REJECT
@@ -88,7 +90,10 @@ class WaypointTasks:
         mission.plan_ready_pub.publish(Bool(data=False))
         self.leg_pub.publish(Bool(data=False))
         self.state.update(phase='planning', reason='已从停车位置重新规划本段' if self.replanned else '')
+        self.local_reason = ''
         self.progress_time = time.monotonic()
+        self.leg_started = self.progress_time
+        self.state['timing_ms'] = {}
         self.progress_pose = mission.initial_odom
         self.handle.publish_feedback(FollowWaypoints.Feedback(current_waypoint=self.state['index']))
         self.publish()
@@ -99,6 +104,24 @@ class WaypointTasks:
     def request_route(self, start):
         goal = self.handle.request.poses[self.state['index']]
         self.route_pub.publish(Path(header=start.header, poses=[start, goal]))
+        self.mark_time('global_request')
+
+    def mark_time(self, stage):
+        if self.active and stage not in self.state['timing_ms']:
+            self.state['timing_ms'][stage] = round((time.monotonic() - self.leg_started) * 1000)
+
+    def on_segment_status(self, msg):
+        if not self.active or self.state['phase'] not in ('planning', 'walking'):
+            return
+        if self.mission.goal_stamp != (msg.goal_stamp.sec, msg.goal_stamp.nanosec):
+            return
+        reasons = {'LOCAL_TARGET_BLOCKED': '局部目标受阻，等待通道恢复',
+                   'TRAJECTORY_BLOCKED': '当前路线出现障碍，已请求制动',
+                   'LOCAL_PLAN_UNAVAILABLE': '暂时没有可执行的局部轨迹，正在重算', 'TRACKING': ''}
+        if msg.reason in reasons:
+            self.local_reason = reasons[msg.reason]
+            self.state['reason'] = self.local_reason
+            self.publish()
 
     def on_turn_clear(self, msg):
         mission = self.mission
@@ -130,7 +153,7 @@ class WaypointTasks:
         if not self.active:
             return
         if self.state['phase'] == 'stopping':
-            if self.stop_terminal == 'replan' and terminal != 'replan':
+            if (self.stop_terminal == 'replan' and terminal != 'replan') or (terminal == 'canceled' and self.stop_terminal != terminal):
                 self.stop_terminal = terminal
                 self.state['reason'] = reason
                 self.publish()
@@ -138,6 +161,7 @@ class WaypointTasks:
         self.state.update(phase='stopping', reason=reason)
         self.stop_terminal = terminal
         self.stop_anchor = None
+        self.stop_time = time.monotonic()
         self.leg_pub.publish(Bool(data=True))
         self.mission.cancel_localized_mission()
         self.publish()
@@ -168,6 +192,10 @@ class WaypointTasks:
         if phase == 'stopping':
             pose = mission.initial_odom
             stamp = getattr(mission, 'odom_stamp_ns', 0)
+            if time.monotonic() - self.stop_time >= (35.0 if self.stop_terminal == 'replan' else 5.0):
+                self.state['reason'] += '；未及时获得停车或恢复确认，运动许可已撤销'
+                self.finish('canceled' if self.handle.is_cancel_requested else 'failed')
+                return
             if pose is None or not 0 <= mission.get_clock().now().nanoseconds - stamp <= 500_000_000:
                 self.stop_anchor = None
                 return
@@ -190,23 +218,24 @@ class WaypointTasks:
                 self.begin_leg()
         else:
             if mission.plan_accepted and phase == 'planning':
+                self.mark_time('motion_permitted')
                 self.state['phase'] = 'walking'
                 self.publish()
             if mission.plan_accepted and mission.initial_odom and self.progress_pose:
-                if (math.dist(mission.initial_odom[:2], self.progress_pose[:2]) > 0.06 or
+                if (math.dist(mission.initial_odom[:3], self.progress_pose[:3]) > 0.06 or
                         abs(math.remainder(mission.initial_odom[3] - self.progress_pose[3], 2 * math.pi)) > 0.09):
                     self.progress_time = time.monotonic()
                     self.progress_pose = mission.initial_odom
             stalled = time.monotonic() - self.progress_time
             if stalled > 6 and mission.started and not self.replanned:
-                self.stop('replan', '当前段持续无进展，站稳后从当前位置重新规划一次')
+                self.stop('replan', (self.local_reason or '当前段持续无进展') + '，站稳后从当前位置重新规划一次')
             elif stalled > (20 if self.replanned and mission.started else 90):
                 self.stop('failed', '等待规划或行走进展超时')
             elif mission.started and stalled > 2:
-                reason = '暂未检测到位姿进展，等待可执行轨迹'
+                reason = self.local_reason or '暂未检测到位姿进展，等待可执行轨迹'
                 if self.state['reason'] != reason:
                     self.state['reason'] = reason
                     self.publish()
-            elif mission.plan_accepted and self.state['reason']:
+            elif mission.plan_accepted and self.state['reason'] and not self.local_reason:
                 self.state['reason'] = ''
                 self.publish()

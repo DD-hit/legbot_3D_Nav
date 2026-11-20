@@ -16,6 +16,7 @@ def generate_launch_description():
     actions.append(DeclareLaunchArgument('cloud_topic', default_value='/fast_lio/cloud_registered'))
     actions.append(DeclareLaunchArgument('global_path_topic', default_value='/pct_path'))
     actions.append(DeclareLaunchArgument('cancel_on_empty_path', default_value='false', choices=['true', 'false']))
+    actions.append(DeclareLaunchArgument('require_route_stamp', default_value='false', choices=['true', 'false']))
     actions.append(DeclareLaunchArgument('frame_id', default_value='odom'))
     actions.append(DeclareLaunchArgument('lidar_horizontal_fov_deg', default_value='240.0'))
     actions.append(DeclareLaunchArgument(
@@ -132,6 +133,7 @@ def generate_launch_description():
             'turn_slowdown_angle': ParameterValue(LaunchConfiguration('turn_slowdown_angle'), value_type=float),
             'min_turn_speed_scale': ParameterValue(LaunchConfiguration('min_turn_speed_scale'), value_type=float),
             'cmd_accel_limit': ParameterValue(LaunchConfiguration('cmd_accel_limit'), value_type=float),
+            'require_route_stamp': ParameterValue(LaunchConfiguration('require_route_stamp'), value_type=bool),
             'cmd_yaw_accel_limit': ParameterValue(LaunchConfiguration('cmd_yaw_accel_limit'), value_type=float),
             'finish_dist': ParameterValue(LaunchConfiguration('finish_dist'), value_type=float),
             'goal_settle_time': ParameterValue(LaunchConfiguration('goal_settle_time'), value_type=float),

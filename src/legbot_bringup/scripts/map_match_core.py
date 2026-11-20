@@ -1,7 +1,10 @@
 """Gravity-aligned, bounded scan-to-map initialization in building coordinates."""
 import math
+import hashlib
 import os
 import time
+import zipfile
+from pathlib import Path
 
 import numpy as np
 from scipy.ndimage import distance_transform_edt
@@ -132,14 +135,56 @@ def correlation(grid, source, orientation, shifts):
     return (weights[cells[:, :, 0], cells[:, :, 1], cells[:, :, 2]] * valid).mean(axis=1)
 
 
+def file_hash(path):
+    digest = hashlib.sha256()
+    with open(path, 'rb') as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def reference_index_path(path):
+    return Path(str(path) + '.reference-v1.npz')
+
+
+def write_reference_index(path, digest, voxel_size=0.14):
+    points = voxel_points(read_pcd(path), voxel_size)
+    if len(points) < 50:
+        return
+    samples = points.astype(np.float64)
+    normals = representative_normals(samples, cKDTree(samples))
+    np.savez(reference_index_path(path), digest=digest, voxel_size=voxel_size, points=points, normals=normals)
+
+
+def read_reference_index(path, voxel_size):
+    try:
+        with np.load(reference_index_path(path), allow_pickle=False) as data:
+            if data['voxel_size'].item() != voxel_size or data['digest'].item() != file_hash(path):
+                return None
+            points, normals = data['points'], data['normals']
+            if (points.ndim == 2 and points.shape[1] == 3 and len(points) >= 50 and points.shape == normals.shape
+                    and points.dtype == np.float32 and normals.dtype == np.float64
+                    and np.isfinite(points).all() and np.isfinite(normals).all()):
+                return points, normals
+    except (OSError, EOFError, ValueError, KeyError, zipfile.BadZipFile):
+        pass
+    return None
+
+
 class LocalizationMap:
     def __init__(self, path_or_xyz, voxel_size=0.14):
-        raw = read_pcd(path_or_xyz) if isinstance(path_or_xyz, (str, os.PathLike)) else path_or_xyz
-        self.points = voxel_points(raw, voxel_size).astype(np.float64)
+        is_file = isinstance(path_or_xyz, (str, os.PathLike))
+        cached = read_reference_index(path_or_xyz, voxel_size) if is_file else None
+        if cached is None:
+            raw = read_pcd(path_or_xyz) if is_file else path_or_xyz
+            points, normals = voxel_points(raw, voxel_size), None
+        else:
+            points, normals = cached
+        self.points = points.astype(np.float64)
         if len(self.points) < 50:
             raise ValueError('reference map contains too few usable points')
         self.tree = cKDTree(self.points)
-        self.normals = representative_normals(self.points, self.tree)
+        self.normals = representative_normals(self.points, self.tree) if normals is None else normals
         self.minimum = self.points.min(axis=0)
         self.maximum = self.points.max(axis=0)
 
@@ -238,15 +283,16 @@ class LocalizationMap:
         pose = seed.copy()
         for iteration in range(24):
             transform = rotation(pose[3])
-            offsets = source @ transform.T
+            stride = 3 if iteration < 5 and len(source) >= 1200 else 1
+            offsets = source[::stride] @ transform.T
             moved = offsets + pose[:3]
-            distance, indices = self.tree.query(moved)
-            keep = distance < (0.78 if iteration < 6 else 0.44)
+            distance, indices = self.tree.query(moved, distance_upper_bound=0.78 if iteration < 6 else 0.44)
+            keep = np.isfinite(distance)
             if np.count_nonzero(keep) < 40:
                 return None
             offsets = offsets[keep]
             target_normals = self.normals[indices[keep]]
-            source_normals = normals[keep] @ transform.T
+            source_normals = normals[::stride][keep] @ transform.T
             residual = moved[keep] - self.points[indices[keep]]
             cosine = np.sum(source_normals * target_normals, axis=1)
             strength = 0.97
@@ -257,13 +303,14 @@ class LocalizationMap:
                 precision += coefficient[:, None, None] * basis[:, :, None] * basis[:, None, :]
             robust = np.minimum(1.0, 0.18 / np.maximum(distance[keep], 1e-6))
             precision *= robust[:, None, None]
-            jacobian = np.zeros((len(offsets), 3, 4))
-            jacobian[:, :, :3] = np.eye(3)
-            jacobian[:, 0, 3] = -offsets[:, 1]
-            jacobian[:, 1, 3] = offsets[:, 0]
-            weighted = jacobian.transpose(0, 2, 1) @ precision
-            hessian = (weighted @ jacobian).sum(axis=0)
-            gradient = (weighted @ residual[:, :, None]).sum(axis=0).ravel()
+            yaw_weight = offsets[:, 0, None] * precision[:, 1] - offsets[:, 1, None] * precision[:, 0]
+            hessian = np.empty((4, 4))
+            hessian[:3, :3] = precision.sum(axis=0)
+            hessian[3, :3] = hessian[:3, 3] = yaw_weight.sum(axis=0)
+            hessian[3, 3] = yaw_weight[:, 1] @ offsets[:, 0] - yaw_weight[:, 0] @ offsets[:, 1]
+            gradient = np.empty(4)
+            gradient[:3] = np.einsum('nij,nj->i', precision, residual)
+            gradient[3] = np.einsum('ni,ni->', yaw_weight, residual)
             increment = np.linalg.solve(hessian + np.eye(4) * 1e-5, -gradient)
             pose += increment
             if (np.linalg.norm(pose[:2] - initial[:2]) > xy_radius + 0.35 or
@@ -315,7 +362,7 @@ class LocalizationMap:
         return metrics
 
     def match(self, scan_xyz, initial_pose, mode='multi', validation_xyz=None,
-              xy_radius=2.5, yaw_radius=45.0, sensor_origin=(0.0, 0.0, 0.0)):
+              xy_radius=2.5, yaw_radius=45.0, sensor_origin=(0.0, 0.0, 0.0), cancelled=None):
         started = time.monotonic()
         initial = np.asarray(initial_pose, dtype=float)
         if (initial.shape != (4,) or not np.all(np.isfinite(initial)) or
@@ -345,6 +392,8 @@ class LocalizationMap:
         seeds = self.coarse_seeds(source, initial, xy_radius, yaw_radius, grid) if grid is not None else [initial]
         estimates = []
         for seed in seeds:
+            if cancelled is not None and cancelled():
+                return result('SUPERSEDED')
             pose = self.refine(source, source_normals, seed, initial, xy_radius, yaw_radius)
             if pose is not None:
                 estimates.append((self.evaluate(source, source_normals, pose, sensor_origin), pose))
@@ -387,6 +436,8 @@ class LocalizationMap:
             other_seeds = self.other_height_seeds(source, initial, pose, xy_radius, grid)
             metrics['other_height_candidates'] = len(other_seeds)
             for seed in other_seeds:
+                if cancelled is not None and cancelled():
+                    return result('SUPERSEDED')
                 alternate_initial = initial.copy()
                 alternate_initial[2] = seed[2]
                 alternate_pose = self.refine(source, source_normals, seed, alternate_initial, xy_radius, yaw_radius)

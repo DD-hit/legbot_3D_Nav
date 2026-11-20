@@ -10,6 +10,7 @@ try:
 except ImportError:  # Jazzy exposes the underlying shutdown error as RuntimeError.
     RCLError = RuntimeError
 from rclpy.node import Node
+from rclpy.clock import Clock, ClockType
 from geometry_msgs.msg import Twist
 from std_msgs.msg import Bool, Header, Int32, String
 from nav_msgs.msg import Odometry
@@ -47,7 +48,7 @@ class CommandAdapter(Node):
         self.pub = self.create_publisher(Inputs, '/control_input', 10)
         self.create_subscription(Twist, '/cmd_vel', self.command, 10)
         self.create_subscription(Int32, '/go2/control_mode', self.control_mode, 10)
-        self.create_timer(0.02, self.publish)
+        self.create_timer(0.02, self.publish, clock=Clock(clock_type=ClockType.STEADY_TIME))
         self.get_logger().info(
             'GO2 command safety inputs: odometry=%s cloud=%s' %
             (self.odom_topic, self.cloud_topic))
@@ -79,7 +80,10 @@ class CommandAdapter(Node):
             self.fix_stamp_ns = None
 
     def on_permit(self, msg):
-        self.permit_stamp_ns = msg.stamp.sec * 1_000_000_000 + msg.stamp.nanosec if msg.frame_id else None
+        stamp = msg.stamp.sec * 1_000_000_000 + msg.stamp.nanosec if msg.frame_id else None
+        if stamp is None or stamp != self.permit_stamp_ns:
+            self.last_velocity = float('-inf')
+        self.permit_stamp_ns = stamp
         self.last_permit = time.monotonic()
 
     def map_permits_motion(self, now):
@@ -115,9 +119,11 @@ class CommandAdapter(Node):
                     (now-self.last_odom <= self.navigation_timeout,
                      now-self.last_cloud <= self.navigation_timeout))
             vx, vy, wz = 0., 0., 0.
+            self.last_velocity = float('-inf')
         msg = Inputs()
         map_ready = self.map_permits_motion(now)
         if not map_ready:
+            self.last_velocity = float('-inf')
             vx, vy, wz = 0., 0., 0.
         msg.ly, msg.lx, msg.rx = float(vx), float(-vy), float(-wz)
         msg.command = self.mode if now-self.last_mode < 0.1 and (self.mode != 3 or map_ready) else 0

@@ -30,12 +30,7 @@ def locate(point, succeeds):
     call('seed', point)
     pending = wait(lambda state: state['localization']['state'] in ('COLLECTING', 'MATCHING'), 4)
     assert pending['pose'] is None and not pending['ready']
-    try:
-        call('seed', point)
-    except HTTPError as error:
-        assert error.code == 409
-    else:
-        raise AssertionError('second seed accepted while matching')
+    assert call('seed', point)['accepted']
     state = wait(lambda state: state['ready'] or state['localization']['state'] == 'FAILED', 38)
     print('seed', point, state['localization'], 'ready', state['ready'], flush=True)
     assert state['ready'] == succeeds

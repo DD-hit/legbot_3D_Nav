@@ -32,6 +32,7 @@ def run():
     executable = Path(get_package_prefix('scan_planner')) / 'lib/scan_planner/scan_go2_cmd_adapter'
     adapter = subprocess.Popen([
         str(executable), '--ros-args', '-p', 'use_sim_time:=true', '-p', 'goal_settle_time:=0.6',
+        '-p', 'require_route_stamp:=true',
         '-p', 'finish_dist:=0.07', '-p', 'min_walk_speed:=0.12', '-p', 'goal_min_walk_speed:=0.20',
         '-p', 'use_goal_z:=true', '-p', 'finish_dist_z:=0.8',
         '-p', 'body_pose_topic:=' + prefix + '/odom', '-r', '/clock:=' + prefix + '/clock',
@@ -77,6 +78,12 @@ def run():
         spline = Bspline(order=3, knots=[float(index) for index in range(-3, 7)],
                          start_time=goal.header.stamp,
                          pos_pts=[Point(x=value, z=1.) for value in (-0.7, -0.5, -0.3, 0., 0., 0.)])
+        spline_pub.publish(spline)
+        for _ in range(3):
+            sample(-0.5)
+        assert commands and not any(command.linear.x for command in commands), 'foreign segment started motion'
+        spline.goal_stamp = goal.header.stamp
+        spline.start_time = sample(-0.5)
         spline_pub.publish(spline)
         for _ in range(3):
             sample(-0.5)

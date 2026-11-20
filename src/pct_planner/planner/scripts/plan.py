@@ -79,7 +79,7 @@ last_planned_end_pos = None
 plan_timer = None
 cloud_timer = None
 map_cloud_messages = None
-cloud_wait_checks = 0
+cloud_subscribers = (0, 0)
 PLAN_INTERVAL = 0.5  # 规划检查间隔（秒）
 
 
@@ -152,17 +152,14 @@ def republish_map_clouds():
 
 def publish_clouds_when_rviz_is_ready():
     """Send one live copy after RViz matches, then stop the lightweight poll."""
-    global cloud_wait_checks
-    cloud_wait_checks += 1
-    rviz_matched = (
-        global_points_pub.get_subscription_count() > 0 and
-        tomogram_pub.get_subscription_count() > 0)
-    if not rviz_matched and cloud_wait_checks < 40:
-        return
-    republish_map_clouds()
-    cloud_timer.cancel()
-    node.get_logger().info(
-        'PCT map cloud late-join publish complete: rviz_matched=%s' % rviz_matched)
+    global cloud_subscribers
+    current = (global_points_pub.get_subscription_count(), tomogram_pub.get_subscription_count())
+    if any(now > previous for now, previous in zip(current, cloud_subscribers)):
+        if map_cloud_messages is None:
+            publish_map_clouds()
+        else:
+            republish_map_clouds()
+    cloud_subscribers = current
 
 
 def on_localized_start(message):
@@ -347,7 +344,6 @@ def make6DofMarker(position,name,fixed=True,show_6dof = True):
 
 def pct_plan():
     planner.loadTomogram(tomo_file)
-    publish_map_clouds()
     global cloud_timer
     # Transient-local is normally sufficient.  Some DDS implementations do
     # not replay multi-megabyte cached samples reliably, so poll only for a

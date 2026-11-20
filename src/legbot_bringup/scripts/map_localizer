@@ -79,6 +79,7 @@ class MapLocalizer(Node):
             raise ValueError('base_height must be nonnegative and finite')
         self.executor_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix='map_match')
         self.reference = None
+        self.preload = self.executor_pool.submit(LocalizationMap, self.settings['map_path']) if self.settings['map_path'] else None
         self.job = None
         self.generation = 0
         self.seed_stamp_ns = None
@@ -181,9 +182,10 @@ class MapLocalizer(Node):
         self.last_stamp = timestamp.nanoseconds
         self.last_sensor = time.monotonic()
         if self.state in ('LOCALIZED', 'COLLECTING'):
-            points = np.column_stack([fields[name][valid] for name in ('x', 'y', 'z')])
-            stride = max(1, (len(points) + 23999) // 24000)
-            self.frames.append((timestamp, points[::stride].copy()))
+            indices = np.flatnonzero(valid)
+            indices = indices[::max(1, (len(indices) + 23999) // 24000)]
+            points = np.column_stack([fields[name].ravel()[indices] for name in ('x', 'y', 'z')])
+            self.frames.append((timestamp, points))
 
     def on_imu(self, message):
         if self.state != 'COLLECTING':
@@ -263,16 +265,23 @@ class MapLocalizer(Node):
         self.wait_reason = 'ODOMETRY_JUMP' if jump else 'MAP_TRACKING_MISMATCH'
         self.report('COLLECTING', self.wait_reason)
 
-    def match(self, frames, seed, origin, odom_heading, sensor_origin):
+    def match(self, frames, seed, origin, odom_heading, sensor_origin, *, generation):
         if self.reference is None:
-            self.reference = LocalizationMap(self.settings['map_path'])
+            if self.preload is None:
+                self.reference = LocalizationMap(self.settings['map_path'])
+            else:
+                try:
+                    self.reference = self.preload.result()
+                finally:
+                    self.preload = None
         split = self.settings['scan_frames']
         rotation = rotation_z(odom_heading)
         source = (np.concatenate(frames[:split]) - origin) @ rotation
         validation = (np.concatenate(frames[split:]) - origin) @ rotation
         return self.reference.match(source, seed, mode=self.settings['mode'],
                                     validation_xyz=validation, xy_radius=self.settings['xy_radius'],
-                                    yaw_radius=self.settings['yaw_radius'], sensor_origin=sensor_origin)
+                                    yaw_radius=self.settings['yaw_radius'], sensor_origin=sensor_origin,
+                                    cancelled=lambda: generation != self.generation or time.monotonic() >= self.deadline)
 
     def recovery_seed(self, origin, yaw, stamp):
         pose = np.array(self.trusted_pose)
@@ -339,7 +348,8 @@ class MapLocalizer(Node):
         sensor_origin = (tilt @ (positions[0] - origin)) @ rotation_z(leveled_yaw)
         frames = [(points - origin) @ tilt.T + origin for _, points, _ in observations]
         seed = self.recovery_seed(origin, yaw, stamp.nanoseconds) if self.automatic else self.seed
-        future = self.executor_pool.submit(self.match, frames, seed, origin, leveled_yaw, sensor_origin)
+        future = self.executor_pool.submit(self.match, frames, seed, origin, leveled_yaw, sensor_origin,
+                                           generation=self.generation)
         self.job = (future, self.generation, origin, yaw, stamp.nanoseconds, leveled_yaw, tilt)
         self.last_odom_stamp = stamp.nanoseconds
         self.last_odom_time = time.monotonic()
@@ -433,6 +443,7 @@ class MapLocalizer(Node):
         self.ready_pub.publish(Bool(data=self.state == 'LOCALIZED'))
 
     def destroy_node(self):
+        self.generation += 1
         self.executor_pool.shutdown(wait=False, cancel_futures=True)
         return super().destroy_node()
 

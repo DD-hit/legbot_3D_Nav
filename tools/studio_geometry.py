@@ -18,6 +18,7 @@ from scipy.ndimage import binary_dilation, distance_transform_edt, find_objects,
 from scipy.spatial import cKDTree
 
 from build_floor_display import FloorMap, read_pcd, root
+from map_match_core import reference_index_path
 from floor_review import candidates
 from studio_support import apply_support, support_patch
 
@@ -538,6 +539,9 @@ def make_revision(project, generation, dest, edits):
     ]
     save_json(dest / "display.json", display)
     os.link(source / "source.pcd", dest / "source.pcd")
+    index = reference_index_path(source / 'source.pcd')
+    if index.is_file():
+        os.link(index, dest / index.name)
     save_json(dest / "edits.json", edits)
     report.update(
         version=manifest["version"],
