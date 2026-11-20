@@ -19,6 +19,7 @@ legbot_torch_dir="${LEGBOT_TORCH_ROOT:-${legbot_root}/third_party/libtorch}"
 export LD_LIBRARY_PATH="${legbot_root}/third_party/onnxruntime/lib:${legbot_torch_dir}/lib:${legbot_root}/third_party/Livox-SDK2/install/lib:${PCT_THIRDPARTY_LIB_DIR}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 export ROS_DOMAIN_ID="${LEGBOT_ROS_DOMAIN_ID:-77}"
 export ROS_LOCALHOST_ONLY=1
+export LEGBOT_MAPS_DIR="${LEGBOT_MAPS_DIR:-${legbot_root}/maps}"
 export GZ_PARTITION="${LEGBOT_GZ_PARTITION:-legbot-humble-${USER}}"
 export GZ_IP="${LEGBOT_GZ_IP:-127.0.0.1}"
 

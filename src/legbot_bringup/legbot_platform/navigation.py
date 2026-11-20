@@ -7,6 +7,7 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration as Arg
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
+from legbot_platform.map_profiles import load_map
 
 
 def include(filename, arguments, condition=None):
@@ -21,11 +22,11 @@ def read_profile(context, name):
         return yaml.safe_load(stream)
 
 
-def navigation_arguments(web_default, sim_time_default):
-    config_dir = os.path.join(share('legbot_bringup'), 'config')
+def navigation_arguments(web_default, sim_time_default, map_default=None):
+    config_dir = share('legbot_config')
     return [
-        DeclareLaunchArgument('robot_profile', default_value=os.path.join(config_dir, 'robot.yaml')),
-        DeclareLaunchArgument('map_profile', default_value=os.path.join(config_dir, 'map.yaml')),
+        DeclareLaunchArgument('robot_profile', default_value=os.path.join(config_dir, 'robots', 'go2.yaml')),
+        DeclareLaunchArgument('map_profile', default_value=map_default or os.path.join(config_dir, 'maps', 'building2_9', 'map.yaml')),
         DeclareLaunchArgument('use_sim_time', default_value=sim_time_default, choices=['true', 'false']),
         DeclareLaunchArgument('web_console', default_value=web_default, choices=['true', 'false']),
         DeclareLaunchArgument('web_port', default_value='8765'),
@@ -41,13 +42,9 @@ def navigation_arguments(web_default, sim_time_default):
 
 
 def navigation_actions(context, robot, *, localized=True, route_frame=None, mission_options=None, demo_map=False):
-    building = read_profile(context, 'map_profile')
-    directory = os.path.dirname(os.path.abspath(Arg('map_profile').perform(context)))
-    for key in ('tomogram', 'demo_tomogram', 'pcd'):
-        if building.get(key, '').startswith('./'):
-            building[key] = os.path.join(directory, building[key])
-    frame = route_frame or building['frame']
     web = Arg('web_console').perform(context) == 'true'
+    building = load_map(Arg('map_profile').perform(context), web=web, demo=demo_map)
+    frame = route_frame or building['frame']
     if web and (not localized or Arg('initial_z_mode').perform(context) != 'floor'):
         raise ValueError('Web navigation requires map localization and floor-relative initial poses')
     clock = Arg('use_sim_time')
@@ -61,7 +58,7 @@ def navigation_actions(context, robot, *, localized=True, route_frame=None, miss
         actions.extend([
             include('map_localizer.launch.py', {
                 'use_sim_time': clock, 'initial_z_mode': Arg('initial_z_mode'), 'floor_height': Arg('floor_height'),
-                'map_path': os.path.join(share('pct_planner'), building['pcd']), 'map_frame': frame,
+                'map_path': building['pcd'], 'map_frame': frame,
                 'odom_frame': robot['odom_frame'], 'base_frame': robot['base_frame'],
                 'lidar_frame': robot['lidar_frame'], 'base_height': str(robot['base_height']),
                 'imu_topic': robot['imu'], 'cloud_topic': robot['registered_cloud'],

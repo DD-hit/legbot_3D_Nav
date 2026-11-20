@@ -1,0 +1,24 @@
+id: map-c0d0477386db
+version: edit-9747665e6f72ae
+frame: map
+floors:
+- - 0.058
+  - 一楼
+- - 1.561
+  - 二楼
+- - 3.083
+  - 三楼
+- - 4.533
+  - 四楼
+pcd: ./source.pcd
+tomogram: ./planning
+display: ./display.json
+floor_ranges:
+- - 0.008
+  - 0.178
+- - 1.441
+  - 1.681
+- - 2.963
+  - 3.203
+- - 4.413
+  - 4.653

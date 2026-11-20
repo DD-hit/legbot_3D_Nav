@@ -1,0 +1,12 @@
+function(legbot_resource_alias name target)
+  get_filename_component(parent "share/${PROJECT_NAME}/${name}" DIRECTORY)
+  file(RELATIVE_PATH relative "${CMAKE_INSTALL_PREFIX}/${parent}" "${target}")
+  install(CODE "
+    set(alias \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/share/${PROJECT_NAME}/${name}\")
+    if(IS_DIRECTORY \"\${alias}\" AND NOT IS_SYMLINK \"\${alias}\")
+      message(FATAL_ERROR \"Existing directory at \${alias}. Move the old package install aside before rebuilding.\")
+    endif()
+    file(MAKE_DIRECTORY \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/${parent}\")
+    file(CREATE_LINK \"${relative}\" \"\${alias}\" SYMBOLIC)
+  ")
+endfunction()

@@ -3,6 +3,7 @@ import os
 import tempfile
 from pathlib import Path
 import xacro
+from launch.logging import get_logger
 from ament_index_python.packages import get_package_share_directory as share
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction, ExecuteProcess, RegisterEventHandler, SetEnvironmentVariable, EmitEvent
@@ -10,7 +11,8 @@ from launch.events import Shutdown
 from launch.event_handlers import OnProcessExit, OnShutdown
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
-from legbot_platform.calibration import sensor_joints, sensor_profile
+from legbot_platform.calibration import sensor_joints
+from legbot_platform.resources import model_and_controller
 
 
 def setup(context):
@@ -29,21 +31,14 @@ def setup(context):
             'diagnose_fastlio:=true is an evaluation mode for navigation_source:=fastlio')
     if cfg('publish_ground_truth') == 'false' and cfg('synthetic_stair_cloud') == 'true':
         raise RuntimeError('synthetic_stair_cloud requires publish_ground_truth:=true; use the simulated LiDAR with FAST-LIO otherwise')
-    controller_files = {
-        'himloco': 'gazebo.yaml',
-        'legged_gym': 'legged_gym_controller.yaml',
-        'stairs_trot': 'stairs_trot_controller.yaml',
-        'robot_lab': 'robot_lab_controller.yaml',
-        'go2_cts': 'go2_cts_controller.yaml',
-        'mjlab_flat': 'mjlab_flat_controller.yaml',
-        'moe_cts_77k': 'moe_cts_77k_controller.yaml',
-    }
-    controller_file = controller_files[cfg('policy_profile')]
-    description = xacro.process_file(os.path.join(share('go2_description'), 'xacro/robot.xacro'),
+    robot, model, controller_file = model_and_controller(cfg('robot_profile'), cfg('policy_profile'), 'sim')
+    joints = sensor_joints(robot, cfg)
+    get_logger('legbot.platform').info(f'Model: {model} | controller: {controller_file} | sensor joints (m, rad): {joints}')
+    description = xacro.process_file(model,
                                      mappings={'GAZEBO': 'true', 'CLASSIC': 'false',
                                                'ENABLE_LIDAR': cfg('enable_lidar'),
-                                               **sensor_joints(sensor_profile(cfg('robot_profile')), cfg),
-                                               'controller_config': os.path.join(share('go2_description'), 'config', controller_file)}).toxml()
+                                               **joints,
+                                               'controller_config': controller_file}).toxml()
     world = cfg('world')
     description_dir = tempfile.TemporaryDirectory(prefix='legbot-sim-')
     description_path = Path(description_dir.name) / 'robot.urdf'
@@ -55,7 +50,7 @@ def setup(context):
             gz_args.append('--headless-rendering')
     gz_args.append(world)
     spawn = Node(package='ros_gz_sim', executable='create', output='screen',
-                 arguments=['-world', 'tower', '-topic', '/go2/robot_description', '-name', 'go2',
+                 arguments=['-world', cfg('world_name'), '-topic', '/go2/robot_description', '-name', 'go2',
                             '-x', cfg('x'), '-y', cfg('y'), '-z', cfg('z'), '-Y', cfg('yaw')])
     spawners = [Node(package='controller_manager', executable='spawner', output='screen',
                      arguments=[name, '--controller-manager', '/controller_manager', '--controller-manager-timeout', '120'])
@@ -84,6 +79,9 @@ def setup(context):
         parameters=[{'use_sim_time': True}], arguments=bridge_arguments,
         remappings=bridge_remappings)
     resource_path = os.path.join(share('legbot_bringup'), 'models')
+    scene_models = Path(world).parent / 'models'
+    if scene_models.is_dir():
+        resource_path = str(scene_models) + os.pathsep + resource_path
     if os.environ.get('GZ_SIM_RESOURCE_PATH'):
         resource_path += os.pathsep + os.environ['GZ_SIM_RESOURCE_PATH']
     package_share = share('legbot_bringup')
@@ -163,10 +161,9 @@ def generate_launch_description():
         DeclareLaunchArgument('synthetic_stair_cloud', default_value='false', choices=['true', 'false']),
         DeclareLaunchArgument('synthetic_scene', default_value='stairs', choices=['stairs', 'stairs_obstacles', 'flat']),
         DeclareLaunchArgument('synthetic_include_risers', default_value='false', choices=['true', 'false']),
-        DeclareLaunchArgument('policy_profile', default_value='moe_cts_77k',
-                              choices=['himloco', 'legged_gym', 'stairs_trot', 'robot_lab', 'go2_cts',
-                                       'mjlab_flat', 'moe_cts_77k']),
+        DeclareLaunchArgument('policy_profile', default_value='', description='Override the policy selected in the robot profile'),
         DeclareLaunchArgument('world', default_value=os.path.join(share('legbot_bringup'), 'worlds/Building.sdf')),
+        DeclareLaunchArgument('world_name', default_value='tower'),
         # Building.sdf starts in the flat western half. Driving east first
         # exercises obstacle avoidance, then reaches the multi-storey stairs.
         DeclareLaunchArgument('x', default_value='-27.0'), DeclareLaunchArgument('y', default_value='6.0'),

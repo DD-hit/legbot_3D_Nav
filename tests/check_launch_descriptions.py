@@ -34,7 +34,7 @@ for path in sorted(Path('src/legbot_bringup/launch').glob('*.launch.py')):
         assert "('~/robot_description','/go2/robot_description')" not in real_source
         ethernet = next((item.name for item in Path('/sys/class/net').iterdir() if item.name != 'lo'), None)
         if ethernet:
-            assert context.launch_configurations['policy_profile'] == 'moe_cts_77k'
+            assert context.launch_configurations['policy_profile'] == ''
             context.launch_configurations['network_interface'] = ethernet
             context.launch_configurations['policy_profile'] = 'himloco'
             # Compatibility environment + robot_state_publisher + manager +
@@ -195,7 +195,7 @@ for path in sorted(Path('src/legbot_bringup/launch').glob('*.launch.py')):
         assert "('robot_description', '/go2/robot_description')" in simulation_source
         assert "'third_party', 'libtorch', 'lib'" in simulation_source
         assert "'third_party', 'onnxruntime', 'lib'" in simulation_source
-        assert context.launch_configurations['policy_profile'] == 'moe_cts_77k'
+        assert context.launch_configurations['policy_profile'] == ''
         assert context.launch_configurations['navigation_source'] == 'fastlio'
         assert context.launch_configurations['publish_ground_truth'] == 'false'
         assert context.launch_configurations['diagnose_fastlio'] == 'false'

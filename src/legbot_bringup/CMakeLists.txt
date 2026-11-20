@@ -28,7 +28,23 @@ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${floor_display}
 file(READ "${floor_display}" FLOOR_DISPLAY)
 configure_file(web/index.html "${CMAKE_CURRENT_BINARY_DIR}/web/index.html" @ONLY)
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/web/index.html" web/console.css web/console.js DESTINATION share/${PROJECT_NAME}/web)
-install(DIRECTORY launch config models worlds rviz web_maps DESTINATION share/${PROJECT_NAME}
+find_package(legbot_config REQUIRED)
+get_filename_component(settings "${legbot_config_DIR}/.." ABSOLUTE)
+file(GLOB old_profiles CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/config/*.yaml")
+foreach(profile IN LISTS old_profiles)
+  get_filename_component(filename "${profile}" NAME)
+  if(filename STREQUAL "map.yaml")
+    legbot_resource_alias("config/map.yaml" "${settings}/maps/building2_9/map.yaml")
+    continue()
+  endif()
+  get_filename_component(source "${profile}" REALPATH)
+  file(RELATIVE_PATH resource "${CMAKE_CURRENT_SOURCE_DIR}/../../config" "${source}")
+  legbot_resource_alias("config/${filename}" "${settings}/${resource}")
+endforeach()
+legbot_resource_alias("web_maps/building2_9.json" "${settings}/maps/building2_9/display.json")
+legbot_resource_alias("worlds/Building.sdf" "${settings}/maps/building2_9/world.sdf")
+install(DIRECTORY launch models worlds rviz web_maps DESTINATION share/${PROJECT_NAME}
+  PATTERN "building2_9.json" EXCLUDE PATTERN "Building.sdf" EXCLUDE
   PATTERN "__pycache__" EXCLUDE
   PATTERN "*.pyc" EXCLUDE)
 ament_package()

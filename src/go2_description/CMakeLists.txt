@@ -3,9 +3,21 @@ project(go2_description)
 
 find_package(ament_cmake REQUIRED)
 
-install(
-		DIRECTORY meshes xacro launch config urdf
-		DESTINATION share/${PROJECT_NAME}/
-)
+find_package(robot_description REQUIRED)
+find_package(legbot_config REQUIRED)
+get_filename_component(models "${robot_description_DIR}/.." ABSOLUTE)
+get_filename_component(settings "${legbot_config_DIR}/.." ABSOLUTE)
+foreach(directory meshes xacro urdf config)
+  if(directory STREQUAL "config")
+    set(target "${settings}/control/go2")
+  else()
+    set(target "${models}/go2/${directory}")
+  endif()
+  file(GLOB_RECURSE resources CONFIGURE_DEPENDS LIST_DIRECTORIES false RELATIVE "${target}" "${target}/*")
+  foreach(resource IN LISTS resources)
+    legbot_resource_alias("${directory}/${resource}" "${target}/${resource}")
+  endforeach()
+endforeach()
+install(DIRECTORY launch DESTINATION share/${PROJECT_NAME})
 
 ament_package()

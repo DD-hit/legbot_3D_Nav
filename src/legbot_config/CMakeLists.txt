@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.16)
+project(legbot_config)
+find_package(ament_cmake REQUIRED)
+install(DIRECTORY ../../config/ DESTINATION share/${PROJECT_NAME} PATTERN "navigation/map.yaml" EXCLUDE)
+install(DIRECTORY ../../maps/building2_9 ../../maps/building_edited DESTINATION share/${PROJECT_NAME}/maps)
+include(cmake/resource_alias.cmake)
+legbot_resource_alias(navigation/map.yaml "${CMAKE_INSTALL_PREFIX}/share/${PROJECT_NAME}/maps/building2_9/map.yaml")
+ament_package(CONFIG_EXTRAS cmake/resource_alias.cmake)

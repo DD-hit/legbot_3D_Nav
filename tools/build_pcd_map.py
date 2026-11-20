@@ -145,7 +145,7 @@ def main():
                 np.any(bands[:, 0] >= bands[:, 1]) or np.any(bands[:, 0] > levels) or
                 np.any(bands[:, 1] < levels) or np.any(bands[:-1, 1] >= bands[1:, 0])):
             parser.error('楼层采样范围无效或相互重叠')
-        robot = yaml.safe_load((root/'src/legbot_bringup/config/robot.yaml').read_text())
+        robot = yaml.safe_load((root/'config/robots/go2.yaml').read_text())
         footprint = robot['footprint_radius'] + abs(robot['footprint_offset'])
         surface_builder = reconstruct_tiles if profile.get('tile_platforms') else reconstruct
         for level, band in zip(levels, bands):

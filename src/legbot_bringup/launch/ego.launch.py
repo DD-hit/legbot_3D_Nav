@@ -8,7 +8,7 @@ from launch_ros.parameter_descriptions import ParameterValue
 
 def generate_launch_description():
     actions = []
-    config = os.path.join(get_package_share_directory("legbot_bringup"), "config", "ego.yaml")
+    config = os.path.join(get_package_share_directory("legbot_config"), "navigation", "ego.yaml")
     actions.append(DeclareLaunchArgument('map_size_x', default_value='50.0'))
     actions.append(DeclareLaunchArgument('map_size_y', default_value='50.0'))
     actions.append(DeclareLaunchArgument('map_size_z', default_value='50.0'))

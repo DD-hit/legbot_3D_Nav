@@ -330,8 +330,9 @@ else(ROS_EDITION STREQUAL "ROS2")
     ament_lint_auto_find_test_dependencies()
   endif()
 
+  get_filename_component(driver_config "${CMAKE_CURRENT_SOURCE_DIR}/config" REALPATH)
+  install(DIRECTORY "${driver_config}/" DESTINATION share/${PROJECT_NAME}/config)
   ament_auto_package(INSTALL_TO_SHARE
-    config
     launch_ROS2
   )
 

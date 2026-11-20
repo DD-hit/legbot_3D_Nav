@@ -31,7 +31,7 @@ export LD_LIBRARY_PATH="$CUDA_PATH/lib64:$LD_LIBRARY_PATH"
 export CUPY_COMPILE_WITH_PTX=1
 bundle=/data0/rl/legbot_mapping/new_building_bundle
 "$PCT_PYTHON" tools/build_pcd_map.py src/pct_planner/src/pcd/building2_9.pcd "$bundle" \
-  --profile src/legbot_bringup/config/map.yaml --infer-isolated
+  --profile maps/building2_9/map.yaml --infer-isolated
 PYTHONPATH="src/legbot_bringup/scripts:$PYTHONPATH" "$PCT_PYTHON" tests/check_building_pcd_bundle.py "$bundle"
 ros2 launch legbot_bringup pct_cross_floor_demo.launch.py map_profile:="$bundle/map.yaml" \
   navigation_source:=map_localized web_console:=true web_port:=8797 gui:=false rviz:=false

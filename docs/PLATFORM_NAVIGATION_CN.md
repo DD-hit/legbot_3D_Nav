@@ -4,21 +4,56 @@
 
 ## 运行现有仿真
 
-在工作区根目录运行下列命令。`map_profile` 指向地图工作室导出的 `map.yaml`，省略时使用仓库自带地图。
+在工作区根目录运行下列命令。`robot` 选择机型，`map` 选择场地。当前仿真默认使用 `navigation-map.zip` 导出的 `building_edited`，包含一楼至四楼。`map:=building2_9` 可选择五层示例。
 
 ```bash
 source tools/env_humble.sh
-ros2 launch legbot_bringup pct_cross_floor_demo.launch.py \
-  navigation_source:=map_localized publish_ground_truth:=false \
-  web_console:=true gui:=false rviz:=false
+ros2 launch legbot_bringup bringup.launch.py robot:=go2 backend:=sim gui:=false
 ```
+
+新入口默认启用 Web 和地图定位。仿真雷达与惯性测量单元（`IMU`）提供观测，`FAST-LIO` 提供里程计。需要打开 Gazebo 窗口时使用 `gui:=true`。原有启动命令仍可用。
+
+## 模型与配置
+
+| 需要调整什么 | 工作区内的位置 |
+|---|---|
+| GO2 机身模型、网格、关节 | `src/robot_description/go2/`，运行入口为 `xacro/robot.xacro` |
+| 共用雷达和 IMU 的仿真描述 | `src/robot_description/sensors/livox.xacro` |
+| 指定模型、控制策略、雷达外参、话题及机身限制 | `config/robots/go2.yaml` |
+| 雷达驱动配置与里程计参数 | `config/sensors/livox/` 和 `config/sensors/fastlio/` |
+| 场地地图与各图的导航、仿真设置 | `maps/<地图名>/map.yaml` |
+| 共用的局部规划参数 | `config/navigation/` |
+| GO2 控制器参数与配套策略权重 | `config/control/go2/` |
+
+配置和模型通过 `legbot_config`、`robot_description` 两个 ROS 资源包安装。在当前 Humble 工作区修改源文件后执行以下命令，再重新启动。单独覆盖配置时可以直接传 `robot_profile:=/绝对路径/go2.yaml`。
+
+```bash
+source tools/env_humble.sh
+colcon build --base-paths src --build-base build/humble-bringup --install-base install/humble-bringup \
+  --packages-select legbot_config robot_description go2_description legbot_bringup
+source tools/env_humble.sh
+```
+
+`Livox` 厂商启动器从驱动包的安装目录读取设备配置。编辑 `config/sensors/livox/` 后，当前 Humble 工作区还需运行 `colcon build --base-paths src --build-base build/humble-lio --install-base install/humble-lio --packages-select livox_ros_driver2`。
+
+新增机型时把模型放到 `src/robot_description/<机型>/`，在 `config/robots/` 添加同名文件。已有独立驱动和底盘控制的机型可用 `backend:=external` 接入下表的话题和变换。目前 `backend:=sim` 提供 GO2 的 Gazebo 与控制器。
+
+## 管理多张地图
+
+地图工作室导出的地图包解压后，将含 `map.yaml` 的目录放到地图库下，目录名就是启动时的 `map`。在源码工作区执行 `source tools/env_humble.sh` 后，默认地图库为工作区的 `maps/`。也可用 `maps_dir:=/绝对路径` 为本次启动指定地图库，或用 `LEGBOT_MAPS_DIR` 环境变量指定常用位置。新增地图后直接重新启动即可。
+
+每张图的 `pcd` 指定定位点云，`tomogram` 指定规划栅格，`display` 指定 Web 结构图。`floors` 按高度递增列出 `[地面标高, 楼层名]`。相对路径写作 `./文件名`，以这张图的 `map.yaml` 所在目录为准。`id` 区分场地，`version` 区分地图版本，Web 按两者保存常用点位和路线。
+
+统一启动入口支持在地图的 `navigation` 中覆盖 `finish_dist`（到点距离，米）和 `goal_settle_time`（到点稳定时间，秒）。同名启动参数优先。`simulation.world`、`world_name` 和 `spawn` 可指定本场地的 Gazebo 世界、SDF 世界名与出生位姿，`yaw` 采用弧度。出生位姿只用于放置仿真机身。省略世界配置时，`backend:=sim` 沿用演示楼宇世界。真实场地接入外部观测时使用 `backend:=external`。
+
+显式传入 `map_profile:=/绝对路径/map.yaml` 时直接加载该文件。仓库内保留了原地图配置和示例资产路径的兼容入口。
 
 ## 独立运行导航
 
 当传感器、坐标变换和底盘控制由外部进程提供时，直接启动公共导航。平台未就绪、定位未成功时，授权速度输出为零。Web 默认监听回环地址，端口默认为 `8765`。
 
 ```bash
-ros2 launch legbot_bringup navigation.launch.py \
+ros2 launch legbot_bringup bringup.launch.py backend:=external \
   robot_profile:=/path/to/robot.yaml map_profile:=/path/to/map.yaml
 ```
 
@@ -37,7 +72,7 @@ ros2 launch legbot_bringup navigation.launch.py \
 
 ## 配置倾斜雷达
 
-当前 `config/robot.yaml` 是 `GO2` 仿真配置。`lidar_mount` 描述雷达在机身安装父坐标系中的位姿，现有 `GO2` 的安装父坐标系为 `trunk`。长度用米，滚转、俯仰和偏航用弧度。整台雷达倾斜时，调整这里的安装角。
+当前 `config/robots/go2.yaml` 是 `GO2` 仿真配置。`lidar_mount` 描述雷达在机身安装父坐标系中的位姿，现有 `GO2` 的安装父坐标系为 `trunk`。长度用米，滚转、俯仰和偏航用弧度。整台雷达倾斜时，调整这里的安装角。
 
 `imu_in_lidar.xyz` 和 `imu_in_lidar.rpy` 表示内置 IMU 在雷达坐标系下的位姿。机器人模型直接使用该位姿，`FAST-LIO` 使用其逆变换。若该位姿是 `(R,t)`，则逆变换为 `(Rᵀ, −Rᵀt)`。这能避免分别维护两套方向相反的标定。使用外置机身 IMU 时省略 `imu_in_lidar`，由机器人描述提供真实的 IMU 坐标变换，并在对应的 `fastlio_config` 中提供雷达到所选 IMU 的标定。
 

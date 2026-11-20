@@ -9,9 +9,9 @@ from launch_ros.parameter_descriptions import ParameterValue
 def generate_launch_description():
     actions = []
     actions.append(DeclareLaunchArgument("sensor_pose_topic", default_value="/fast_lio/odometry_lidar"))
-    config = os.path.join(get_package_share_directory("legbot_bringup"), "config", "scan.yaml")
+    config = os.path.join(get_package_share_directory("legbot_config"), "navigation", "scan.yaml")
     empty_keypoints = os.path.join(
-        get_package_share_directory('legbot_bringup'), 'config', 'scan_keypoints_empty.yaml')
+        get_package_share_directory('legbot_config'), 'navigation', 'scan_keypoints_empty.yaml')
     actions.append(DeclareLaunchArgument('odom_topic', default_value='/fast_lio/odometry_base'))
     actions.append(DeclareLaunchArgument('cmd_vel_topic', default_value='/cmd_vel'))
     actions.append(DeclareLaunchArgument('cloud_topic', default_value='/fast_lio/cloud_registered'))

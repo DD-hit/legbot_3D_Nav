@@ -4,7 +4,7 @@ import queue
 import threading
 import time
 import uuid
-import yaml
+from legbot_platform.map_profiles import load_map
 from concurrent.futures import Future, TimeoutError
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -31,14 +31,10 @@ class NavigationWeb:
         self.display_json = None
         profile_path = mission.declare_parameter('map_profile', '').value
         if profile_path:
-            with open(profile_path, encoding='utf-8') as stream:
-                profile = yaml.safe_load(stream)
-            for key in ('tomogram', 'display'):
-                if profile[key].startswith('./'):
-                    profile[key] = str(Path(profile_path).resolve().parent / profile[key])
+            profile = load_map(profile_path)
             self.atlas = FloorMap(profile['tomogram'] + '.pickle', profile['floors'], profile['id'], profile['version'])
             display_path = Path(profile['display'])
-            bundle = json.loads((self.root.parent / display_path).read_text())
+            bundle = json.loads(display_path.read_text())
             self.display_json = json.dumps(bundle, separators=(',', ':')).replace('<', '\\u003c').encode()
         else:
             self.atlas = FloorMap()

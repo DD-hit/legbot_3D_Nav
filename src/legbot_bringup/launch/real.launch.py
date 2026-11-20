@@ -1,7 +1,8 @@
 """Ethernet GO2 EDU deployment; command output is disabled by default."""
 import os
 import xacro
-from legbot_platform.calibration import sensor_joints, sensor_profile
+from legbot_platform.calibration import sensor_joints
+from legbot_platform.resources import model_and_controller
 from ament_index_python.packages import get_package_share_directory as share
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, EmitEvent, OpaqueFunction, RegisterEventHandler, SetEnvironmentVariable
@@ -16,19 +17,10 @@ def setup(context):
     interface = val('network_interface')
     if not interface or interface == 'lo' or not os.path.isdir('/sys/class/net/'+interface):
         raise RuntimeError('Provide an existing Ethernet interface, for example network_interface:=enp131s0')
+    robot, model, controller_file = model_and_controller(val('robot_profile'), val('policy_profile'), 'real')
     mappings = {'GAZEBO': 'false', 'network_interface': interface, 'domain': '0', 'enable_commands': val('enable_commands')}
-    mappings.update(sensor_joints(sensor_profile(val('robot_profile')), val))
-    description = xacro.process_file(os.path.join(share('go2_description'), 'xacro/robot.xacro'), mappings=mappings).toxml()
-    controller_files = {
-        'himloco': 'robot_control.yaml',
-        'legged_gym': 'legged_gym_controller.yaml',
-        'stairs_trot': 'stairs_trot_controller.yaml',
-        'robot_lab': 'robot_lab_controller.yaml',
-        'go2_cts': 'go2_cts_controller.yaml',
-        'mjlab_flat': 'mjlab_flat_controller.yaml',
-        'moe_cts_77k': 'moe_cts_77k_controller.yaml',
-    }
-    controller_file = controller_files[val('policy_profile')]
+    mappings.update(sensor_joints(robot, val))
+    description = xacro.process_file(model, mappings=mappings).toxml()
     package_share = share('legbot_bringup')
     workspace_root = os.path.abspath(os.path.join(package_share, '..', '..', '..', '..'))
     diagnostic_overlay = os.path.join(
@@ -43,7 +35,7 @@ def setup(context):
         if os.path.isdir(directory):
             library_path = directory + (os.pathsep + library_path if library_path else '')
     manager = Node(package='controller_manager', executable='ros2_control_node', output='screen',
-                   parameters=[os.path.join(share('go2_description'),'config',controller_file), {
+                   parameters=[controller_file, {
                        'use_sim_time': False,
                        # The policy controller runs at 200 Hz and infers every four
                        # updates (50 Hz). 400 Hz keeps an integer 2:1 hardware to
@@ -95,9 +87,7 @@ def setup(context):
 def generate_launch_description():
     args = [DeclareLaunchArgument('network_interface', description='Ethernet adapter connected to GO2 EDU'),
             DeclareLaunchArgument('enable_commands', default_value='false', choices=['false','true']),
-            DeclareLaunchArgument('policy_profile', default_value='moe_cts_77k',
-                                  choices=['himloco','legged_gym','stairs_trot','robot_lab','go2_cts',
-                                           'mjlab_flat','moe_cts_77k']),
+            DeclareLaunchArgument('policy_profile', default_value='', description='Override the policy selected in the robot profile'),
             DeclareLaunchArgument('odom_topic', default_value='/fast_lio/odometry_base'),
             DeclareLaunchArgument('cloud_topic', default_value='/fast_lio/cloud_registered'),
             DeclareLaunchArgument('require_navigation_data', default_value='true',

@@ -34,6 +34,8 @@
 <depend>controller_manager</depend>
 <exec_depend>controller_manager_msgs</exec_depend>
 <depend>go2_description</depend>
+<depend>legbot_config</depend>
+<depend>robot_description</depend>
 <depend>rclpy</depend>
 <depend>control_input_msgs</depend>
 <depend>tf2_sensor_msgs</depend>

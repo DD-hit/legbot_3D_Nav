@@ -12,7 +12,6 @@ from urllib.request import urlopen
 
 import numpy as np
 import rclpy
-import xacro
 import yaml
 from ament_index_python.packages import get_package_share_directory
 from geometry_msgs.msg import Twist
@@ -24,16 +23,31 @@ from rclpy.qos import DurabilityPolicy, QoSProfile
 from scipy.spatial.transform import Rotation
 from std_msgs.msg import Bool
 
-from legbot_platform.calibration import sensor_joints
+from legbot_platform.resources import robot_path
 
 
 def check_calibration(robot, directory):
     robot.update(sensor_frame='test_imu', lidar_frame='test_lidar',
                  imu_in_lidar={'xyz': [0.07, -0.03, 0.04], 'rpy': [0.1, -0.2, 0.3]})
     robot['lidar_mount']['lidar_pitch'] = -0.42
-    description = Path(get_package_share_directory('go2_description')) / 'xacro/robot.xacro'
-    arguments = sensor_joints(robot, lambda _: '')
-    model = ET.fromstring(xacro.process_file(str(description), mappings={**arguments, 'GAZEBO': 'true', 'CLASSIC': 'false'}).toxml())
+    profile_path = directory / 'sensor.yaml'
+    profile_path.write_text(yaml.safe_dump(robot))
+    launch_dir = Path(get_package_share_directory('legbot_bringup')) / 'launch'
+    context = LaunchContext()
+    context.launch_configurations['robot_profile'] = str(profile_path)
+    simulation = PythonLaunchDescriptionSource(str(launch_dir / 'simulation.launch.py')).get_launch_description(context)
+    for declaration in simulation.entities[:-1]:
+        declaration.execute(context)
+    publisher = next(action for action in simulation.entities[-1].execute(context)
+                     if getattr(action, '_Node__package', None) == 'robot_state_publisher')
+    parameters, = evaluate_parameters(context, publisher._Node__parameters)
+    model = ET.fromstring(parameters['robot_description'])
+    model_root = Path(get_package_share_directory('robot_description')) / 'go2'
+    assert all(Path(mesh.get('filename').removeprefix('file://')).is_relative_to(model_root)
+               for mesh in model.findall('.//mesh'))
+    config_root = Path(get_package_share_directory('legbot_config'))
+    assert any(str(config_root / robot['control_directory']) in (element.text or '')
+               for element in model.findall('.//plugin/parameters'))
     mount = model.find("joint[@name='livox_mount']")
     assert mount.find('child').get('link') == 'test_lidar'
     assert float(mount.find('origin').get('rpy').split()[1]) == -0.42
@@ -41,9 +55,6 @@ def check_calibration(robot, directory):
     assert joint.find('parent').get('link') == 'test_lidar' and joint.find('child').get('link') == 'test_imu'
     translation = np.fromstring(joint.find('origin').get('xyz'), sep=' ')
     rotation = Rotation.from_euler('xyz', np.fromstring(joint.find('origin').get('rpy'), sep=' ')).as_matrix()
-    profile_path = directory / 'sensor.yaml'
-    profile_path.write_text(yaml.safe_dump(robot))
-    launch_dir = Path(get_package_share_directory('legbot_bringup')) / 'launch'
     context = LaunchContext()
     context.launch_configurations['robot_profile'] = str(profile_path)
     sensor_launch = PythonLaunchDescriptionSource(str(launch_dir / 'sensor_odometry.launch.py')).get_launch_description(context)
@@ -83,7 +94,7 @@ def check_graph(robot, directory):
     node.create_subscription(Twist, robot['cmd_vel_topic'], lambda message: velocities.append(message), 10)
     platform = node.create_publisher(Bool, robot['ready_topic'], QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
     with (directory / 'navigation.log').open('w+') as log:
-        process = subprocess.Popen(['ros2', 'launch', 'legbot_bringup', 'navigation.launch.py',
+        process = subprocess.Popen(['ros2', 'launch', 'legbot_bringup', 'bringup.launch.py', 'backend:=external',
                                     f'robot_profile:={path}', f'web_port:={port}'], stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
         try:
             def wait_for(predicate, timeout=25):
@@ -124,7 +135,7 @@ def check_graph(robot, directory):
 
 
 if __name__ == '__main__':
-    robot = yaml.safe_load((Path(get_package_share_directory('legbot_bringup')) / 'config/robot.yaml').read_text())
+    robot = yaml.safe_load(Path(robot_path('go2')).read_text())
     with tempfile.TemporaryDirectory() as directory:
         check_calibration(robot, Path(directory))
         check_graph(robot, Path(directory))

@@ -110,7 +110,10 @@ SDK 固定版本见 [`docs/SENSOR_SDK_UPSTREAM_LOCK.json`](docs/SENSOR_SDK_UPSTR
 | 路径 | 内容 |
 | --- | --- |
 | `src/legbot_bringup` | 总启动入口、适配器、世界、RViz 配置 |
-| `src/go2_description` | GO2 模型、控制配置、策略权重 |
+| `src/robot_description/` | 机器人模型按机型存放，共用传感器模型放在 `sensors/` |
+| `maps/` | 每个场地一个目录，`map.yaml` 管理本图的点云、规划图、楼层、显示图和场地参数。启动时用 `map:=地图名` 选择 |
+| `config/` | 机器人、传感器、导航和控制配置；GO2 的入口为 `robots/go2.yaml` |
+| `src/go2_description/` | 兼容原有 GO2 包名和资源路径 |
 | `src/fast_lio` | 激光—惯性里程计 |
 | `src/scan_planner` | 局部占据图、搜索、轨迹优化、命令适配 |
 | `src/pct_planner` | 多层层析图、全局规划和轨迹优化 |

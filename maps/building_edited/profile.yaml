@@ -1,0 +1,22 @@
+floor_ranges:
+- - 0.008
+  - 0.178
+- - 1.441
+  - 1.681
+- - 2.963
+  - 3.203
+- - 4.413
+  - 4.653
+floors:
+- - 0.058
+  - 一楼
+- - 1.561
+  - 二楼
+- - 3.083
+  - 三楼
+- - 4.533
+  - 四楼
+frame: map
+id: map-c0d0477386db
+slice_reference: cloud_min
+tile_platforms: true

@@ -8,7 +8,9 @@ from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration as Arg, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
+from launch.substitutions import PathJoinSubstitution
 
+from legbot_platform.map_profiles import SIMULATION_MAP
 from legbot_platform.navigation import include, navigation_actions, navigation_arguments, read_profile
 
 
@@ -19,6 +21,7 @@ def setup(context):
     localized = source == 'map_localized'
     web = Arg('web_console').perform(context) == 'true'
     simulation = include('simulation.launch.py', {
+        'world': Arg('world'), 'world_name': Arg('world_name'),
         'gui': Arg('gui'), **{axis: Arg('spawn_' + axis) for axis in ('x', 'y', 'z', 'yaw')},
         'robot_profile': Arg('robot_profile'), 'raw_cloud_topic': robot['raw_cloud'], 'imu_topic': robot['imu'],
         'base_odom_topic': robot['odometry'], 'registered_cloud_topic': robot['registered_cloud'],
@@ -62,10 +65,14 @@ def setup(context):
 
 def generate_launch_description():
     return LaunchDescription([
-        *navigation_arguments('false', 'true'),
+        DeclareLaunchArgument('navigation_source', default_value='ground_truth', choices=['ground_truth', 'fastlio', 'map_localized']),
+        *navigation_arguments('false', 'true', PathJoinSubstitution([
+            share('legbot_config'), 'maps', PythonExpression([
+                repr(SIMULATION_MAP), " if '", Arg('navigation_source'), "' == 'map_localized' else 'building2_9'"]), 'map.yaml'])),
+        DeclareLaunchArgument('world', default_value=os.path.join(share('legbot_bringup'), 'worlds/Building.sdf')),
+        DeclareLaunchArgument('world_name', default_value='tower'),
         DeclareLaunchArgument('gui', default_value='true', choices=['true', 'false']),
         DeclareLaunchArgument('rviz', default_value='true', choices=['true', 'false']),
-        DeclareLaunchArgument('navigation_source', default_value='ground_truth', choices=['ground_truth', 'fastlio', 'map_localized']),
         DeclareLaunchArgument('publish_ground_truth', default_value='false', choices=['true', 'false']),
         DeclareLaunchArgument('spawn_x', default_value=PythonExpression([
             "'7.5' if '", Arg('navigation_source'), "' == 'map_localized' else '-27.0'"])),

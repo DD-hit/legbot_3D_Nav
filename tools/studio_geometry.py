@@ -440,7 +440,7 @@ def make_revision(project, generation, dest, edits):
     shape = np.array(base.shape[-2:])
     res = data["resolution"]
     origin = data["center"] - shape // 2 * res
-    robot = yaml.safe_load((root / "src/legbot_bringup/config/robot.yaml").read_text())
+    robot = yaml.safe_load((root / "config/robots/go2.yaml").read_text())
     footprint = robot["footprint_radius"] + abs(robot["footprint_offset"])
     geometry_path = source / "planning.pickle"
     if patches:

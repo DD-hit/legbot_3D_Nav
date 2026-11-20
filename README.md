@@ -89,7 +89,10 @@ third_party/  local SDK/runtime installations (not committed)
 | Package | Role |
 | --- | --- |
 | `legbot_bringup` | Launch files, the combined world, adapters, RViz configurations |
-| `go2_description` | GO2 URDF, meshes, ros2_control and policy profiles |
+| `src/robot_description/` | Per-robot models and shared sensor descriptions |
+| `maps/` | Per-site map bundles and settings, selected with `map:=<name>` |
+| `config/` | Robot profiles, sensor settings, navigation configuration and motion policies |
+| `go2_description` | Compatibility package for existing GO2 launches and resource paths |
 | `fast_lio` | LiDAR-IMU odometry and registered point clouds |
 | `scan_planner` | Occupancy map, local A*, B-spline planning and GO2 command adapter |
 | `pct_planner` | Tomogram/elevation-map multi-floor global planning |

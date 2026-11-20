@@ -11,15 +11,15 @@ result="$(realpath "$2")"
 export LEGBOT_ROS_DOMAIN_ID="${LEGBOT_REPLAY_DOMAIN:-113}"
 source "$workspace/tools/env_humble.sh"
 cd "$result"
-profile="${LEGBOT_ROBOT_PROFILE:-$workspace/src/legbot_bringup/config/robot.yaml}"
+profile="${LEGBOT_ROBOT_PROFILE:-$workspace/config/robots/go2.yaml}"
 profile_arg() { python3 -c 'import sys,yaml;print(yaml.safe_load(open(sys.argv[1]))[sys.argv[2]])' "$profile" "$1"; }
 cloud="$(profile_arg raw_cloud)"
 imu="$(profile_arg imu)"
 registered="$(profile_arg registered_cloud)"
 base_odom="$(profile_arg odometry)"
-lio_config="$(profile_arg fastlio_config)"
+lio_config="$(python3 -c 'import sys; from legbot_platform.resources import fastlio_path; print(fastlio_path(*sys.argv[1:]))' "$profile" "$(profile_arg fastlio_config)")"
 setsid ros2 launch legbot_bringup fastlio.launch.py use_sim_time:=true align_gravity:=true sensor_queue_depth:=1024 \
-  config:="$workspace/src/legbot_bringup/config/$lio_config" sensor_frame:="$(profile_arg sensor_frame)" \
+  robot_profile:="$profile" config:="$lio_config" sensor_frame:="$(profile_arg sensor_frame)" \
   base_frame:="$(profile_arg base_frame)" odom_frame:="$(profile_arg odom_frame)" raw_cloud_topic:="$cloud" imu_topic:="$imu" \
   registered_cloud_topic:="$registered" base_odom_topic:="$base_odom" lidar_odom_topic:="$(profile_arg lidar_odometry)" \
   lidar_frame:="$(profile_arg lidar_frame)" >mapping.log 2>&1 &

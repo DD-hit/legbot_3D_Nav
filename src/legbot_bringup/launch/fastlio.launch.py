@@ -45,7 +45,7 @@ def generate_launch_description():
             'registered_cloud_topic':'/fast_lio/cloud_registered','base_odom_topic':'/fast_lio/odometry_base',
             'lidar_odom_topic':'/fast_lio/odometry_lidar'}.items()],
         DeclareLaunchArgument('use_sim_time', default_value='false'),
-        DeclareLaunchArgument('config', default_value=os.path.join(share('legbot_bringup'),'config/fastlio_real.yaml')),
+        DeclareLaunchArgument('config', default_value=os.path.join(share('legbot_config'),'sensors/fastlio/fastlio_real.yaml')),
         DeclareLaunchArgument('sensor_frame', default_value='livox_imu_link'),
         DeclareLaunchArgument('lidar_frame', default_value='livox_link'),
         DeclareLaunchArgument('align_gravity', default_value='false', choices=['true', 'false']),

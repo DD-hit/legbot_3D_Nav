@@ -17,7 +17,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('directory', type=Path)
     parser.add_argument('--port', type=int, required=True)
-    parser.add_argument('--robot-profile', type=Path, default=Path(__file__).resolve().parents[1]/'src/legbot_bringup/config/robot.yaml')
+    parser.add_argument('--robot-profile', type=Path, default=Path(__file__).resolve().parents[1]/'config/robots/go2.yaml')
     args = parser.parse_args()
     root = args.directory.resolve()
     profile = args.robot_profile.resolve()

@@ -1,13 +1,1 @@
-id: building2_9
-version: entry-v1
-frame: map
-pcd: src/pcd/building2_9.pcd
-tomogram: building2_9_entry
-demo_tomogram: building2_9
-display: web_maps/building2_9.json
-floors:
-  - [0.0, 入口层]
-  - [1.5, 下层平台]
-  - [3.0, 中层平台]
-  - [4.5, 上层平台]
-  - [6.0, 顶层]
+../../../config/navigation/map.yaml
