@@ -61,6 +61,8 @@ namespace scan_planner
     bool respect_goal_heading_ = false;
     bool check_terminal_turn_ = false;
     legbot::Publisher turn_clear_pub_;
+    legbot::Publisher heading_clear_pub_;
+    void publishHeadingClearance(double elapsed);
     std::vector<Eigen::Vector3d> preset_waypoints_;
     int waypoint_num_;
     double planning_horizon_;

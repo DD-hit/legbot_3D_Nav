@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <std_msgs/msg/int64.hpp>
 
 namespace scan_planner
 {
@@ -86,6 +87,7 @@ namespace scan_planner
     go2_execution_frozen_sub_ = nh.subscribe("/planning/go2_execution_frozen", 10, &SCANReplanFSM::go2ExecutionFrozenCallback, this);
 
     bspline_pub_ = nh.advertise<scan_planner::msg::Bspline>("/planning/bspline", 10);
+    heading_clear_pub_ = nh.advertise<std_msgs::msg::Int64>("/scan/heading_clear_trajectory", 1);
     data_disp_pub_ = nh.advertise<scan_planner::msg::DataDisp>("/planning/data_display", 100);
     self_inflation_pub_ = nh.advertise<visualization_msgs::msg::Marker>("self_inflation", 10, true);
 
@@ -1121,6 +1123,27 @@ namespace scan_planner
     }
   }
 
+  void SCANReplanFSM::publishHeadingClearance(double elapsed)
+  {
+    auto &info = planner_manager_->local_data_;
+    const auto clear = [&](const Eigen::Vector3d &pos) {
+      for (int angle = 0; angle < 180; angle += 10)
+        if (planner_manager_->grid_map_->getInflateOccupancy(pos, angle * M_PI / 180.0) != 0)
+          return false;
+      return true;
+    };
+    bool allowed = clear(odom_pos_);
+    const double end = std::min(info.duration_, elapsed + 0.8);
+    for (double sample = std::min(elapsed, end); allowed; sample += 0.08)
+    {
+      allowed = clear(info.position_traj_.evaluateDeBoorT(std::min(sample, end)));
+      if (sample >= end) break;
+    }
+    std_msgs::msg::Int64 message;
+    message.data = allowed ? info.traj_id_ : -1;
+    heading_clear_pub_.publish(message);
+  }
+
   void SCANReplanFSM::checkCollisionCallback(const legbot::TimerEvent &e)
   {
     updateLocalTrajTimeFreeze();
@@ -1166,6 +1189,7 @@ namespace scan_planner
       if (sample_t >= info->duration_)
         break;
     }
+    publishHeadingClearance(t_cur);
   }
 
   bool SCANReplanFSM::callReboundReplan(bool flag_use_poly_init, bool flag_randomPolyTraj)
@@ -1222,6 +1246,7 @@ namespace scan_planner
         bspline.knots.push_back(knots(i));
       }
 
+      publishHeadingClearance(0.0);
       bspline_pub_.publish(bspline);
 
       visualization_->displayOptimalTraj(info->position_traj_, 0);

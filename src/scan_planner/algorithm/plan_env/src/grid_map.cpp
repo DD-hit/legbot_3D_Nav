@@ -242,7 +242,7 @@ void GridMap::updateMapBoundaryFromIndex()
 void GridMap::rebuildInflationOffsets()
 {
   const double double_radius = std::max(0.0, mp_.double_cylinder_radius_);
-  const int inf_step_xy = ceil(double_radius / mp_.resolution_);
+  const int inf_step_xy = std::ceil(double_radius / mp_.resolution_) + 1;
   const int inf_step_z_up = ceil(mp_.obstacles_inflation_z_up / mp_.resolution_);
   const int inf_step_z_down = ceil(mp_.obstacles_inflation_z_down / mp_.resolution_);
 
@@ -250,8 +250,9 @@ void GridMap::rebuildInflationOffsets()
   for (int x = -inf_step_xy; x <= inf_step_xy; ++x)
     for (int y = -inf_step_xy; y <= inf_step_xy; ++y)
     {
-      Eigen::Vector2d offset_xy(x * mp_.resolution_, y * mp_.resolution_);
-      if (offset_xy.norm() >= double_radius)
+      const double gap_x = std::max(0, std::abs(x) - 1) * mp_.resolution_;
+      const double gap_y = std::max(0, std::abs(y) - 1) * mp_.resolution_;
+      if ((x != 0 || y != 0) && std::hypot(gap_x, gap_y) >= double_radius)
         continue;
 
       for (int z = -inf_step_z_down; z <= inf_step_z_up; ++z)

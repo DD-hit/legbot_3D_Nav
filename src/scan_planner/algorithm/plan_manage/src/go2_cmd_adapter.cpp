@@ -6,6 +6,8 @@
 #include <Eigen/Eigen>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geometry_msgs/msg/twist.hpp>
+#include <geometry_msgs/msg/vector3_stamped.hpp>
+#include <std_msgs/msg/int64.hpp>
 #include <nav_msgs/msg/odometry.hpp>
 #include <legbot_runtime/runtime.hpp>
 #include <std_msgs/msg/bool.hpp>
@@ -25,6 +27,17 @@ legbot::Subscriber bspline_sub;
 legbot::Subscriber odom_sub;
 legbot::Subscriber goal_sub;
 legbot::Subscriber turn_clear_sub;
+legbot::Subscriber heading_clear_sub;
+legbot::Publisher heading_pub;
+int64_t clear_trajectory = -1;
+legbot::Time clearance_time;
+legbot::Time heading_time;
+double heading_reference = 0.0;
+constexpr double clearance_valid_seconds = 0.18;
+constexpr double heading_preview_m = 1.5;
+constexpr double straight_heading_band = 0.065;
+constexpr double heading_response_seconds = 0.50;
+std::string odom_frame;
 legbot::Timer cmd_timer;
 
 bool receive_traj = false;
@@ -210,8 +223,61 @@ double estimateDesiredYaw(double t_near, double t_look, const Eigen::Vector3d &p
   return odom_yaw;
 }
 
+void headingClearCallback(const std_msgs::msg::Int64::ConstSharedPtr &msg)
+{
+  clear_trajectory = msg->data;
+  clearance_time = legbot::Time::now();
+}
+
+double travelHeading(double nearest, const Eigen::Vector3d &start, double tangent,
+                     const legbot::Time &now, bool terminal)
+{
+  const double age = (now - clearance_time).toSec();
+  if (terminal || rotate_only || clear_trajectory != traj_id || age < 0.0 || age > clearance_valid_seconds ||
+      std::abs(normalizeAngle(tangent - odom_yaw)) > 0.65)
+  {
+    heading_time = legbot::Time();
+    return tangent;
+  }
+
+  Eigen::Vector2d previous = start.head<2>();
+  Eigen::Vector2d direction = Eigen::Vector2d::Zero();
+  double distance = 0.0;
+  for (double sample = nearest + 0.16; distance < heading_preview_m; sample += 0.16)
+  {
+    const Eigen::Vector2d point = traj[0].evaluateDeBoorT(std::min(sample, traj_duration)).head<2>();
+    const Eigen::Vector2d step = point - previous;
+    const double length = step.norm();
+    if (length > 1e-5)
+    {
+      if (distance > 0.18 && std::abs(normalizeAngle(std::atan2(step.y(), step.x()) - tangent)) > 0.50)
+        break;
+      direction += step * std::min(1.0, (heading_preview_m - distance) / length);
+      distance += length;
+    }
+    if (sample >= traj_duration) break;
+    previous = point;
+  }
+  if (direction.norm() < 0.18)
+  {
+    heading_time = legbot::Time();
+    return tangent;
+  }
+  const double desired = tangent + clamp(normalizeAngle(std::atan2(direction.y(), direction.x()) - tangent), -0.35, 0.35);
+  const double dt = (now - heading_time).toSec();
+  if (heading_time.isZero() || dt < 0.0 || dt > clearance_valid_seconds)
+    heading_reference = odom_yaw;
+  const double error = normalizeAngle(desired - heading_reference);
+  const double correction = std::copysign(std::max(0.0, std::abs(error) - straight_heading_band), error);
+  heading_reference = normalizeAngle(heading_reference + correction * -std::expm1(-clamp(dt, 0.0, 0.05) / heading_response_seconds));
+  heading_reference = normalizeAngle(tangent + clamp(normalizeAngle(heading_reference - tangent), -0.40, 0.40));
+  heading_time = now;
+  return heading_reference;
+}
+
 void publishStop(double vyaw = 0.0)
 {
+  heading_time = legbot::Time();
   geometry_msgs::msg::Twist cmd;
   cmd.angular.z = clamp(vyaw, -max_vyaw, max_vyaw);
   cmd_vel_pub.publish(cmd);
@@ -253,6 +319,7 @@ void goalCallback(const geometry_msgs::msg::PoseStamped::ConstSharedPtr &msg)
     return;
 
   latest_goal_time = legbot::Time(msg->header.stamp);
+  heading_time = legbot::Time();
   if (latest_goal_time.isZero())
     latest_goal_time = legbot::Time::now();
   have_goal_time = true;
@@ -393,6 +460,7 @@ void odomCallback(const nav_msgs::msg::Odometry::ConstSharedPtr &msg)
   odom_pos(1) = msg->pose.pose.position.y;
   odom_pos(2) = msg->pose.pose.position.z;
   odom_yaw = legbot_tf::getYaw(msg->pose.pose.orientation);
+  odom_frame = msg->header.frame_id;
   have_odom = true;
   last_odom_time = now;
   if (goal_settle_time > 0.0 && have_goal_position && !goal_stop_latched && stamp >= latest_goal_time)
@@ -571,7 +639,8 @@ void cmdCallback(const legbot::TimerEvent &)
     vel_world = clampNorm(vel_world, std::max(max_vx * terminal_scale, effective_min_walk_speed));
   }
 
-  double yaw_des = estimateDesiredYaw(t_near, t_look, pos_near, pos_look);
+  const double tangent = estimateDesiredYaw(t_near, t_look, pos_near, pos_look);
+  double yaw_des = travelHeading(t_near, pos_near, tangent, now, terminal_approach);
   // Position-error steering is useful only during coarse tracking.  Near the
   // final point its direction flips by pi as soon as the robot crosses the
   // target, producing the observed left/right oscillation.  Always retain
@@ -579,6 +648,13 @@ void cmdCallback(const legbot::TimerEvent &)
   if (steer_with_position_error && !terminal_approach && vel_world.norm() > 0.02)
     yaw_des = std::atan2(vel_world(1), vel_world(0));
   const double yaw_err = normalizeAngle(yaw_des - odom_yaw);
+  geometry_msgs::msg::Vector3Stamped diagnostic;
+  diagnostic.header.stamp = now;
+  diagnostic.header.frame_id = odom_frame;
+  diagnostic.vector.x = tangent;
+  diagnostic.vector.y = yaw_des;
+  diagnostic.vector.z = odom_yaw;
+  heading_pub.publish(diagnostic);
   const double terminal_yaw_scale = terminal_approach ? terminal_scale : 1.0;
 
   const double abs_yaw_error = std::abs(yaw_err);
@@ -663,6 +739,8 @@ int main(int argc, char **argv)
   legbot::NodeHandle nh("~");
 
   loadParams(nh);
+  heading_clear_sub = node.subscribe("/scan/heading_clear_trajectory", 1, headingClearCallback);
+  heading_pub = node.advertise<geometry_msgs::msg::Vector3Stamped>("/scan/tracking_heading", 1);
   if (respect_goal_heading)
     turn_clear_sub = node.subscribe("/scan/terminal_turn_clear", 1, turnClearCallback);
 
@@ -683,6 +761,10 @@ int main(int argc, char **argv)
   legbot::spin();
 
   cmd_timer.stop();
+  cmd_timer.handle.reset();
+  heading_clear_sub.shutdown();
+  heading_pub.shutdown();
+  turn_clear_sub.shutdown();
   bspline_sub.shutdown();
   goal_sub.shutdown();
   odom_sub.shutdown();
