@@ -1,6 +1,7 @@
 """Ethernet GO2 EDU deployment; command output is disabled by default."""
 import os
 import xacro
+from legbot_platform.calibration import sensor_joints, sensor_profile
 from ament_index_python.packages import get_package_share_directory as share
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, EmitEvent, OpaqueFunction, RegisterEventHandler, SetEnvironmentVariable
@@ -16,7 +17,7 @@ def setup(context):
     if not interface or interface == 'lo' or not os.path.isdir('/sys/class/net/'+interface):
         raise RuntimeError('Provide an existing Ethernet interface, for example network_interface:=enp131s0')
     mappings = {'GAZEBO': 'false', 'network_interface': interface, 'domain': '0', 'enable_commands': val('enable_commands')}
-    mappings.update({key: val(key) for key in ('lidar_x','lidar_y','lidar_z','lidar_roll','lidar_pitch','lidar_yaw')})
+    mappings.update(sensor_joints(sensor_profile(val('robot_profile')), val))
     description = xacro.process_file(os.path.join(share('go2_description'), 'xacro/robot.xacro'), mappings=mappings).toxml()
     controller_files = {
         'himloco': 'robot_control.yaml',
@@ -107,6 +108,7 @@ def generate_launch_description():
             DeclareLaunchArgument('max_vx', default_value='0.20'),
             DeclareLaunchArgument('max_vy', default_value='0.08'),
             DeclareLaunchArgument('max_yaw_rate', default_value='0.30')]
-    args += [DeclareLaunchArgument(key, default_value=value) for key,value in
-             [('lidar_x','0.15'),('lidar_y','0.0'),('lidar_z','0.15'),('lidar_roll','0.0'),('lidar_pitch','0.0'),('lidar_yaw','0.0')]]
+    args.append(DeclareLaunchArgument('robot_profile', default_value=''))
+    args += [DeclareLaunchArgument(key, default_value='') for key in
+             ('lidar_x','lidar_y','lidar_z','lidar_roll','lidar_pitch','lidar_yaw')]
     return LaunchDescription(args+[OpaqueFunction(function=setup)])

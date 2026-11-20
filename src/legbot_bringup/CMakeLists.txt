@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.16)
 project(legbot_bringup)
 find_package(ament_cmake REQUIRED)
+find_package(ament_cmake_python REQUIRED)
+ament_python_install_package(legbot_platform)
 find_package(legbot_runtime REQUIRED)
 find_package(tf2_sensor_msgs REQUIRED)
 foreach(n reference_path_transform fastlio_odom_adapter cloud_transform)
@@ -11,6 +13,7 @@ install(TARGETS ${n} DESTINATION lib/${PROJECT_NAME})
 endforeach()
 install(PROGRAMS
   scripts/go2_command_adapter
+  scripts/navigation_velocity_guard
   scripts/go2_estop_keyboard
   scripts/go2_demo_sequencer
   scripts/map_localizer

@@ -18,12 +18,14 @@ def generate_launch_description():
         DeclareLaunchArgument('odom_topic', default_value='/fast_lio/odometry_base'),
         DeclareLaunchArgument('cloud_topic', default_value='/fast_lio/cloud_registered'),
         DeclareLaunchArgument('localization_label', default_value='FAST-LIO'),
+        DeclareLaunchArgument('platform_ready_topic', default_value='/platform/ready'),
         Node(
             package='legbot_bringup', executable='go2_demo_sequencer',
             name='go2_demo_sequencer', output='screen',
             remappings=[('/scan/mission_complete', LaunchConfiguration('completion_topic'))],
             parameters=[{
                 'use_sim_time': ParameterValue(LaunchConfiguration('use_sim_time'), value_type=bool),
+                'platform_ready_topic': LaunchConfiguration('platform_ready_topic'),
                 'crouch_wait_seconds': ParameterValue(
                     LaunchConfiguration('crouch_wait_seconds'), value_type=float),
                 'stand_wait_seconds': ParameterValue(

@@ -108,10 +108,15 @@ assert sequencer.plan_seen
 # bypass the RL pulse and ask for fixed stand.
 sequencer.mission_complete = True
 sequencer.ready_pub = Publisher()
+sequencer.platform_ready = Publisher()
+sequencer.has_stood = sequencer.joint_seen = sequencer.odom_seen = sequencer.cloud_seen = True
+sequencer.last_joint_state = 1.0
 sequencer.state_started = 0.0
 sequencer_module.time.monotonic = lambda: 1.0
 sequencer.tick()
 assert sequencer.state == 'stop_pulse'
+assert sequencer.platform_ready.values == [True]
+sequencer.last_joint_state = -3.0
 
 issued_modes = []
 sequencer.publish_mode = issued_modes.append
@@ -125,5 +130,6 @@ sequencer.state = 'rl_pulse'
 sequencer.mission_complete = True
 sequencer.tick()
 assert sequencer.state == 'settling_at_goal'
+assert sequencer.platform_ready.values[-1] is False
 
 print('PASS execution stop ack, fixed-stand handoff, stale-plan rejection, and rearm')

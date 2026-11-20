@@ -1,0 +1,25 @@
+#!/usr/bin/python3
+import time
+
+from geometry_msgs.msg import Twist
+from legbot_platform.velocity_guard import VelocityGuard, run
+
+
+class NavigationVelocityGuard(VelocityGuard):
+    def __init__(self):
+        super().__init__('navigation_velocity_guard', 'requested')
+        if self.resolve_topic_name('requested') == self.resolve_topic_name('output'):
+            raise ValueError('Velocity watchdog input and output resolve to the same topic')
+        self.pub = self.create_publisher(Twist, 'output', 10)
+
+    def disarm(self):
+        self.last_velocity = float('-inf')
+
+    def publish(self):
+        command = Twist()
+        command.linear.x, command.linear.y, command.angular.z = self.allowed_velocity(time.monotonic())
+        self.pub.publish(command)
+
+
+if __name__ == '__main__':
+    run(NavigationVelocityGuard)

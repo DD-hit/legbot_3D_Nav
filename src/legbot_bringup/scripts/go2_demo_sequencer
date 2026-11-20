@@ -48,6 +48,10 @@ class DemoSequencer(Node):
         latched.durability = DurabilityPolicy.TRANSIENT_LOCAL
         self.mode_pub = self.create_publisher(Int32, '/go2/control_mode', 10)
         self.ready_pub = self.create_publisher(Bool, '/go2/demo_ready', latched)
+        platform_topic = self.declare_parameter('platform_ready_topic', '/platform/ready').value
+        self.platform_ready = self.create_publisher(Bool, platform_topic, latched)
+        self.has_stood = False
+        self.last_joint_state = float('-inf')
         self.create_subscription(JointState, '/joint_states', self.on_joint, qos_profile_sensor_data)
         self.create_subscription(
             Odometry, self.odom_topic, self.on_odom, qos_profile_sensor_data)
@@ -65,6 +69,7 @@ class DemoSequencer(Node):
 
     def on_joint(self, msg):
         self.joint_seen = len(msg.name) >= 12 and len(msg.position) >= 12
+        self.last_joint_state = time.monotonic()
 
     def on_odom(self, msg):
         p = msg.pose.pose.position
@@ -120,6 +125,8 @@ class DemoSequencer(Node):
 
     def tick(self):
         elapsed = time.monotonic() - self.state_started
+        joints_ready = self.joint_seen and time.monotonic() - self.last_joint_state <= 2.0
+        self.platform_ready.publish(Bool(data=self.has_stood and joints_ready and self.odom_seen and self.cloud_seen))
         if self.state == 'waiting_for_joint_states':
             if self.joint_seen and self.walking_controller_active():
                 self.get_logger().info('Controller ready: requesting crouch transition')
@@ -141,6 +148,7 @@ class DemoSequencer(Node):
                 self.enter('waiting_for_navigation_inputs')
         elif self.state == 'waiting_for_navigation_inputs':
             if self.odom_seen and self.cloud_seen:
+                self.has_stood = True
                 self.ready_pub.publish(Bool(data=True))
                 self.get_logger().info(
                     '%s ready: enabling SCAN waypoint mission' % self.localization_label)

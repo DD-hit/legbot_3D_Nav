@@ -148,19 +148,19 @@ for path in sorted(Path('src/legbot_bringup/launch').glob('*.launch.py')):
             and item.get('output_topic') == '/pct_path'
             and item.get('odom_topic') == '/Odometry_gazebo'
             for item in bridge_parameters if isinstance(item, dict))
-        source = path.read_text()
-        assert "'config': rviz_config" in source
-        assert "'scan_stairs_demo.rviz'" in source
+        rviz_args = next(dict(action.launch_arguments) for action in actions
+                         if isinstance(action, IncludeLaunchDescription) and 'config' in dict(action.launch_arguments))
+        assert rviz_args['config'].endswith('/scan_stairs_demo.rviz')
         scan_arguments = next(dict(action.launch_arguments) for action in actions
                               if isinstance(action, IncludeLaunchDescription)
                               and 'navi_mode' in dict(action.launch_arguments))
         assert float(scan_arguments['finish_dist'].perform(context)) == 0.07
         assert float(scan_arguments['goal_settle_time'].perform(context)) == 0.6
-        assert float(scan_arguments['goal_min_walk_speed'].perform(context)) == 0.2
+        assert float(scan_arguments['goal_min_walk_speed']) == 0.2
         context.launch_configurations.update(finish_dist='0.12', goal_settle_time='1.0')
         assert float(scan_arguments['finish_dist'].perform(context)) == 0.12
         assert float(scan_arguments['goal_settle_time'].perform(context)) == 1.0
-        assert "'frame_id': 'odom'" in source
+        assert scan_arguments['frame_id'] == 'odom'
         rviz_source = Path('src/legbot_bringup/rviz/scan_stairs_demo.rviz').read_text()
         assert 'Description Source: Topic' in rviz_source
         assert 'Value: /go2/robot_description' in rviz_source

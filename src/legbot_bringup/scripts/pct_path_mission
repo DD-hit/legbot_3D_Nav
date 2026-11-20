@@ -122,6 +122,8 @@ class PctPathMission(Node):
         self.raw_path = None
         self.initial_odom = None
         self.ready = False
+        self.ready_timeout = self.declare_parameter('ready_timeout', 0.0).value
+        self.last_platform_ready = float('-inf')
         self.started = False
         self.completed = False
         self.goal_stamp = None
@@ -192,6 +194,7 @@ class PctPathMission(Node):
                 self.start_if_ready()
 
     def on_ready(self, msg):
+        self.last_platform_ready = time.monotonic()
         self.ready = bool(msg.data)
         if not self.ready and self.use_map_localization and self.started:
             if self.tasks and self.tasks.active:
@@ -282,6 +285,8 @@ class PctPathMission(Node):
         return ''
 
     def tick_localized(self):
+        if self.ready and self.ready_timeout > 0 and time.monotonic() - self.last_platform_ready > self.ready_timeout:
+            self.on_ready(Bool(data=False))
         if self.tasks:
             self.dependency_error = self.check_dependencies()
             if self.dependency_error and self.tasks.active:

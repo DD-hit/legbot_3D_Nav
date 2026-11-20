@@ -4,6 +4,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from legbot_platform.calibration import imu_pose, lidar_in_imu, sensor_profile
 
 
 def setup(context):
@@ -14,6 +15,7 @@ def setup(context):
     value = lambda name: LaunchConfiguration(name).perform(context)
     settings = {'use_sim_time': use_sim_time, 'mapping.align_gravity': align_gravity,
                 'sensor_queue_depth': int(value('sensor_queue_depth')), 'common.body_frame': sensor_frame}
+    settings.update(lidar_in_imu(imu_pose(sensor_profile(value('robot_profile')))))
     for parameter, argument in [('common.lid_topic','raw_cloud_topic'),('common.imu_topic','imu_topic'),('common.world_frame','odom_frame')]:
         if value(argument):
             settings[parameter] = value(argument)
@@ -37,6 +39,7 @@ def setup(context):
 
 def generate_launch_description():
     return LaunchDescription([
+        DeclareLaunchArgument('robot_profile', default_value=''),
         *[DeclareLaunchArgument(key, default_value=value) for key,value in {
             'raw_cloud_topic':'','imu_topic':'','odom_frame':'','base_frame':'base','sensor_queue_depth':'5',
             'registered_cloud_topic':'/fast_lio/cloud_registered','base_odom_topic':'/fast_lio/odometry_base',

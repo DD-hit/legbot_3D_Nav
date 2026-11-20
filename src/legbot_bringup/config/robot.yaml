@@ -14,5 +14,17 @@ footprint_offset: 0.07
 max_speed: 0.50
 max_lateral_speed: 0.22
 max_yaw_rate: 1.0
+min_walk_speed: 0.12
+max_acc: 0.30
+min_stair_speed: 0.0
+lidar_horizontal_fov_deg: 240.0
+lidar_clear_outside_fov: true
+goal_min_walk_speed: 0.20
+cmd_vel_topic: /cmd_vel
+ready_topic: /platform/ready
+command_timeout: 2.0
+navigation_timeout: 2.0
+ready_timeout: 2.0
+imu_in_lidar: {xyz: [0.011, 0.02329, -0.04412], rpy: [0.0, 0.0, 0.0]}
 base_height: 0.32
 lidar_mount: {lidar_x: 0.15, lidar_y: 0.0, lidar_z: 0.15, lidar_roll: 0.0, lidar_pitch: 0.0, lidar_yaw: 0.0}

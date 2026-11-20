@@ -10,6 +10,7 @@ from launch.events import Shutdown
 from launch.event_handlers import OnProcessExit, OnShutdown
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from legbot_platform.calibration import sensor_joints, sensor_profile
 
 
 def setup(context):
@@ -41,7 +42,7 @@ def setup(context):
     description = xacro.process_file(os.path.join(share('go2_description'), 'xacro/robot.xacro'),
                                      mappings={'GAZEBO': 'true', 'CLASSIC': 'false',
                                                'ENABLE_LIDAR': cfg('enable_lidar'),
-                                               **{key: cfg(key) for key in ('lidar_x','lidar_y','lidar_z','lidar_roll','lidar_pitch','lidar_yaw')},
+                                               **sensor_joints(sensor_profile(cfg('robot_profile')), cfg),
                                                'controller_config': os.path.join(share('go2_description'), 'config', controller_file)}).toxml()
     world = cfg('world')
     description_dir = tempfile.TemporaryDirectory(prefix='legbot-sim-')
@@ -127,7 +128,7 @@ def setup(context):
             'navigation_timeout': 2.0,
             'require_navigation_data': cfg('require_navigation_data') == 'true',
             'require_map_localization': cfg('navigation_source') == 'map_localized',
-        }]),
+        }], remappings=[('/cmd_vel', cfg('cmd_vel_topic'))]),
         *([Node(package='legbot_bringup', executable='stair_cloud_sim', output='screen',
                parameters=[{'use_sim_time': True, 'odom_topic': '/Odometry_gazebo',
                             'scene_type': cfg('synthetic_scene'),
@@ -143,8 +144,10 @@ def setup(context):
 
 def generate_launch_description():
     return LaunchDescription([
+        DeclareLaunchArgument('robot_profile', default_value=''),
+        DeclareLaunchArgument('cmd_vel_topic', default_value='/cmd_vel'),
         *[DeclareLaunchArgument(key, default_value=value) for key, value in {
-            'lidar_x':'0.15','lidar_y':'0.0','lidar_z':'0.15','lidar_roll':'0.0','lidar_pitch':'0.0','lidar_yaw':'0.0',
+            'lidar_x':'','lidar_y':'','lidar_z':'','lidar_roll':'','lidar_pitch':'','lidar_yaw':'',
             'raw_cloud_topic':'/livox/points_raw','imu_topic':'/livox/imu',
             'base_odom_topic':'/fast_lio/odometry_base','registered_cloud_topic':'/fast_lio/cloud_registered'}.items()],
         # FAST-LIO is the normal navigation source. Gazebo truth can be

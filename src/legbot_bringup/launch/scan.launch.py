@@ -13,6 +13,7 @@ def generate_launch_description():
     empty_keypoints = os.path.join(
         get_package_share_directory('legbot_bringup'), 'config', 'scan_keypoints_empty.yaml')
     actions.append(DeclareLaunchArgument('odom_topic', default_value='/fast_lio/odometry_base'))
+    actions.append(DeclareLaunchArgument('cmd_vel_topic', default_value='/cmd_vel'))
     actions.append(DeclareLaunchArgument('cloud_topic', default_value='/fast_lio/cloud_registered'))
     actions.append(DeclareLaunchArgument('global_path_topic', default_value='/pct_path'))
     actions.append(DeclareLaunchArgument('cancel_on_empty_path', default_value='false', choices=['true', 'false']))
@@ -144,7 +145,7 @@ def generate_launch_description():
             'body_pose_topic': ParameterValue(LaunchConfiguration('odom_topic'), value_type=str),
         }], remappings=[
             ('/planning/bspline', '/scan/planning/bspline'),
-            ('/cmd_vel', '/cmd_vel'),
+            ('/cmd_vel', LaunchConfiguration('cmd_vel_topic')),
             ('/planning/go2_execution_frozen', '/scan/planning/execution_frozen'),
         ]))
     return LaunchDescription(actions)

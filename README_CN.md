@@ -7,7 +7,7 @@
 [![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 
-[English](README.md) | 简体中文 | [项目技术分析](docs/PROJECT_ANALYSIS_CN.md) | [完整运行指南](运行指南.md)
+[English](README.md) | 简体中文 | [项目技术分析](docs/PROJECT_ANALYSIS_CN.md) | [完整运行指南](运行指南.md) | [Humble 公共导航与平台接入](docs/PLATFORM_NAVIGATION_CN.md)
 
 Legbot 是面向 Unitree GO2/GO2 EDU 的 ROS 2 Jazzy 三维导航工作区。工程将激光—惯性里程计、局部避障、多楼层参考路径、强化学习步态、Gazebo 仿真和带安全门的真机接口组织在同一套启动体系中。
 
