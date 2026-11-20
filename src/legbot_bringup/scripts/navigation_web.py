@@ -4,6 +4,7 @@ import queue
 import threading
 import time
 import uuid
+import yaml
 from concurrent.futures import Future, TimeoutError
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -26,7 +27,21 @@ from waypoint_tasks import coordinates
 class NavigationWeb:
     def __init__(self, mission, port):
         self.mission = mission
-        self.atlas = FloorMap()
+        self.root = Path(get_package_share_directory('legbot_bringup')) / 'web'
+        self.display_json = None
+        profile_path = mission.declare_parameter('map_profile', '').value
+        if profile_path:
+            with open(profile_path, encoding='utf-8') as stream:
+                profile = yaml.safe_load(stream)
+            for key in ('tomogram', 'display'):
+                if profile[key].startswith('./'):
+                    profile[key] = str(Path(profile_path).resolve().parent / profile[key])
+            self.atlas = FloorMap(profile['tomogram'] + '.pickle', profile['floors'], profile['id'], profile['version'])
+            display_path = Path(profile['display'])
+            bundle = json.loads((self.root.parent / display_path).read_text())
+            self.display_json = json.dumps(bundle, separators=(',', ':')).replace('<', '\\u003c').encode()
+        else:
+            self.atlas = FloorMap()
         self.localization = {'state': 'WAITING_FOR_INITIAL_POSE'}
         self.seed = None
         self.seed_pending = None
@@ -41,7 +56,6 @@ class NavigationWeb:
         action = '/navigation/follow_waypoints'
         self.client = ActionClient(mission, FollowWaypoints, action)
         self.cancel = mission.create_client(CancelGoal, action + '/_action/cancel_goal')
-        self.root = Path(get_package_share_directory('legbot_bringup')) / 'web'
         self.server = ThreadingHTTPServer(('127.0.0.1', port), self.handler())
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.timer = mission.create_timer(0.2, self.update, clock=Clock(clock_type=ClockType.STEADY_TIME))
@@ -71,7 +85,7 @@ class NavigationWeb:
             self.localization = {'state': 'FAILED', 'reason': '定位节点未及时返回本次结果'}
         if self.localization.get('state') == 'LOCALIZED' and mission.fix_stamp_ns is not None:
             try:
-                tf = mission.buffer.lookup_transform('map', 'base', Time())
+                tf = mission.buffer.lookup_transform(mission.pct_frame_id, mission.base_frame, Time())
                 stamp = Time.from_msg(tf.header.stamp).nanoseconds
                 if stamp >= mission.fix_stamp_ns and 0 <= mission.get_clock().now().nanoseconds - stamp < 2_000_000_000:
                     pos, rot = tf.transform.translation, tf.transform.rotation
@@ -85,7 +99,7 @@ class NavigationWeb:
         outside = mission.fix_stamp_ns is not None and self.outside_fix == mission.fix_stamp_ns
         ready = mission.ready and pose is not None and not outside and self.seed_pending is None
         route = [coordinates(p) for p in mission.raw_path.poses] if mission.raw_path and mission.tasks.active else []
-        snapshot = dict(localization={k: self.localization[k] for k in ('state', 'reason', 'pose', 'request_id', 'seed_stamp_ns') if k in self.localization},
+        snapshot = dict(localization={k: self.localization[k] for k in ('state', 'reason', 'pose', 'request_id', 'seed_stamp_ns', 'automatic') if k in self.localization},
                         standing=mission.ready, ready=ready, seed=self.seed, pose=pose, task=mission.tasks.state, route=route)
         if outside:
             snapshot.update(localization={'state': 'LOST', 'reason': '机身估计已超出地图，请重新定位'}, pose=None)
@@ -109,7 +123,7 @@ class NavigationWeb:
             if not math.isfinite(yaw):
                 raise ValueError('朝向无效')
             message = PoseWithCovarianceStamped()
-            message.header.frame_id = 'map'
+            message.header.frame_id = mission.pct_frame_id
             message.header.stamp = mission.get_clock().now().to_msg()
             pose = message.pose.pose
             pose.position.x, pose.position.y, pose.position.z = xyz
@@ -143,7 +157,7 @@ class NavigationWeb:
             goal = FollowWaypoints.Goal()
             for item in items:
                 pose = PoseStamped()
-                pose.header.frame_id = 'map'
+                pose.header.frame_id = mission.pct_frame_id
                 pose.pose.position.x, pose.pose.position.y, pose.pose.position.z = self.atlas.point(item, True)
                 if not isinstance(item.get('yaw'), (int, float)) or isinstance(item['yaw'], bool) or not math.isfinite(item['yaw']):
                     raise ValueError('请拖动指定每个目标的位置和朝向')
@@ -212,7 +226,12 @@ class NavigationWeb:
                 if path not in files:
                     return self.send_error(404)
                 name, mime = files[path]
-                self.send(200, mime, (app.root / name).read_bytes())
+                data = (app.root / name).read_bytes()
+                if name == 'index.html' and app.display_json is not None:
+                    head, marker, tail = data.partition(b'<script id="structureData" type="application/json">')
+                    if marker:
+                        data = head + marker + app.display_json + b'</script>' + tail.split(b'</script>', 1)[1]
+                self.send(200, mime, data)
 
             def do_POST(self):
                 if not self.trusted() or self.headers.get_content_type() != 'application/json':

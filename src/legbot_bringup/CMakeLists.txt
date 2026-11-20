@@ -25,7 +25,7 @@ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${floor_display}
 file(READ "${floor_display}" FLOOR_DISPLAY)
 configure_file(web/index.html "${CMAKE_CURRENT_BINARY_DIR}/web/index.html" @ONLY)
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/web/index.html" web/console.css web/console.js DESTINATION share/${PROJECT_NAME}/web)
-install(DIRECTORY launch config models worlds rviz DESTINATION share/${PROJECT_NAME}
+install(DIRECTORY launch config models worlds rviz web_maps DESTINATION share/${PROJECT_NAME}
   PATTERN "__pycache__" EXCLUDE
   PATTERN "*.pyc" EXCLUDE)
 ament_package()

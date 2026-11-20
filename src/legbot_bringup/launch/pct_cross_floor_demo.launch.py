@@ -1,6 +1,7 @@
 """One-command Gazebo + PCT + SCAN cross-floor mission."""
 
 import os
+import yaml
 
 from ament_index_python.packages import get_package_share_directory as share
 from launch import LaunchDescription
@@ -21,13 +22,22 @@ def include(package, launch_file, arguments=None, condition=None):
 
 
 def setup(context):
+    def profile(argument):
+        with open(LaunchConfiguration(argument).perform(context), encoding='utf-8') as stream:
+            return yaml.safe_load(stream)
+    robot = profile('robot_profile')
+    building = profile('map_profile')
+    profile_dir = os.path.dirname(os.path.abspath(LaunchConfiguration('map_profile').perform(context)))
+    for key in ('tomogram', 'demo_tomogram', 'pcd'):
+        if building.get(key, '').startswith('./'):
+            building[key] = os.path.join(profile_dir, building[key])
     navigation_source = LaunchConfiguration('navigation_source').perform(context)
     use_ground_truth = navigation_source == 'ground_truth'
     map_localized = navigation_source == 'map_localized'
     web_console = LaunchConfiguration('web_console').perform(context) == 'true'
     if web_console and (not map_localized or LaunchConfiguration('initial_z_mode').perform(context) != 'floor'):
         raise ValueError('web_console requires navigation_source:=map_localized and initial_z_mode:=floor')
-    pct_frame = 'map' if map_localized else 'building_pct'
+    pct_frame = building['frame'] if map_localized else 'building_pct'
     gui = LaunchConfiguration('gui')
     rviz = LaunchConfiguration('rviz')
     spawn_x = LaunchConfiguration('spawn_x')
@@ -51,9 +61,9 @@ def setup(context):
         rviz_config = os.path.join(
             share('legbot_bringup'), 'rviz', 'scan_stairs_demo.rviz')
     else:
-        odom_topic = '/fast_lio/odometry_base'
-        cloud_topic = '/fast_lio/cloud_registered'
-        sensor_pose_topic = '/fast_lio/odometry_lidar'
+        odom_topic = robot['odometry']
+        cloud_topic = robot['registered_cloud']
+        sensor_pose_topic = robot['lidar_odometry']
         localization_label = 'FAST-LIO'
         rviz_config = os.path.join(
             share('legbot_bringup'), 'rviz', 'map_localization.rviz' if map_localized else 'scan_fastlio_flat.rviz')
@@ -65,6 +75,9 @@ def setup(context):
             'y': spawn_y,
             'z': spawn_z,
             'yaw': spawn_yaw,
+            **{key: str(value) for key, value in robot['lidar_mount'].items()},
+            'raw_cloud_topic': robot['raw_cloud'], 'imu_topic': robot['imu'],
+            'base_odom_topic': robot['odometry'], 'registered_cloud_topic': robot['registered_cloud'],
             'navigation_source': navigation_source,
             'publish_ground_truth': 'true' if use_ground_truth else LaunchConfiguration('publish_ground_truth'),
         }),
@@ -74,13 +87,22 @@ def setup(context):
             'use_sim_time': use_sim_time,
             'align_gravity': 'true' if map_localized else 'false',
             'config': os.path.join(
-                share('legbot_bringup'), 'config', 'fastlio_sim.yaml'),
+                share('legbot_bringup'), 'config', robot['fastlio_config']),
+            'sensor_frame': robot['sensor_frame'], 'lidar_frame': robot['lidar_frame'],
+            'base_frame': robot['base_frame'], 'odom_frame': robot['odom_frame'],
+            'raw_cloud_topic': robot['raw_cloud'], 'imu_topic': robot['imu'],
+            'base_odom_topic': odom_topic, 'registered_cloud_topic': cloud_topic, 'lidar_odom_topic': sensor_pose_topic,
         }))
     if map_localized:
         actions.append(include('legbot_bringup', 'map_localizer.launch.py', {
             'use_sim_time': use_sim_time,
             'initial_z_mode': LaunchConfiguration('initial_z_mode'),
             'floor_height': LaunchConfiguration('floor_height'),
+            'map_path': os.path.join(share('pct_planner'), building['pcd']),
+            'map_frame': pct_frame, 'odom_frame': robot['odom_frame'], 'base_frame': robot['base_frame'],
+            'lidar_frame': robot['lidar_frame'], 'base_height': str(robot['base_height']),
+            'imu_topic': robot['imu'],
+            'cloud_topic': cloud_topic,
             **({'xy_radius': '1.0', 'yaw_radius': '30.0'} if web_console else {}),
         }))
 
@@ -100,7 +122,7 @@ def setup(context):
             })]),
         include('legbot_bringup', 'pct_plan.launch.py', {
             'use_sim_time': use_sim_time,
-            'tomogram': 'building2_9_entry' if web_console else 'building2_9',
+            'tomogram': building['tomogram'] if web_console else building.get('demo_tomogram', building['tomogram']),
             'path_topic': '/pct_path_raw',
             'frame_id': pct_frame,
             'use_localized_start': 'true' if map_localized else 'false',
@@ -117,7 +139,7 @@ def setup(context):
             # pct_plan also declares a generic frame_id argument.  Pass this
             # explicitly so the include cannot leak building_pct into SCAN's
             # grid-map and marker headers.
-            'frame_id': 'odom',
+            'frame_id': 'odom' if use_ground_truth else robot['odom_frame'],
             'manual_goal_use_message_z': 'true',
             'finish_dist': LaunchConfiguration('finish_dist'),
             'goal_settle_time': LaunchConfiguration('goal_settle_time'),
@@ -127,6 +149,9 @@ def setup(context):
             'odom_topic': odom_topic,
             'cloud_topic': cloud_topic,
             'sensor_pose_topic': sensor_pose_topic,
+            'robot_radius': str(robot['footprint_radius']), 'robot_half_length': str(robot['footprint_offset']),
+            'max_vel': str(robot['max_speed']), 'max_vy': str(robot['max_lateral_speed']),
+            'max_vyaw': str(robot['max_yaw_rate']),
         }),
         Node(
             package='legbot_bringup',
@@ -140,10 +165,12 @@ def setup(context):
                 'goal_topic': '/scan/goal',
                 'odom_topic': odom_topic,
                 'ready_topic': '/go2/demo_ready',
-                'frame_id': 'odom',
+                'frame_id': 'odom' if use_ground_truth else robot['odom_frame'],
+                'base_frame': robot['base_frame'],
                 'pct_frame_id': pct_frame,
                 'use_map_localization': map_localized,
                 'web_console': web_console,
+                'map_profile': LaunchConfiguration('map_profile'),
                 'web_port': ParameterValue(LaunchConfiguration('web_port'), value_type=int),
                 # Ground-truth odom is the Gazebo world frame, so its map TF
                 # is published immediately below.  FAST-LIO still needs the
@@ -173,6 +200,8 @@ def setup(context):
 
 def generate_launch_description():
     return LaunchDescription([
+        DeclareLaunchArgument('robot_profile', default_value=os.path.join(share('legbot_bringup'), 'config', 'robot.yaml')),
+        DeclareLaunchArgument('map_profile', default_value=os.path.join(share('legbot_bringup'), 'config', 'map.yaml')),
         DeclareLaunchArgument('gui', default_value='true', choices=['true', 'false']),
         DeclareLaunchArgument('web_console', default_value='false', choices=['true', 'false']),
         DeclareLaunchArgument('web_port', default_value='8765'),

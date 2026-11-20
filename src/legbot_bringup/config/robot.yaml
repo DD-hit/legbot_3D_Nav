@@ -1,0 +1,18 @@
+id: go2_building_sim
+fastlio_config: fastlio_sim.yaml
+sensor_frame: livox_imu_link
+lidar_frame: livox_link
+base_frame: base
+odom_frame: odom
+raw_cloud: /livox/points_raw
+imu: /livox/imu
+odometry: /fast_lio/odometry_base
+registered_cloud: /fast_lio/cloud_registered
+lidar_odometry: /fast_lio/odometry_lidar
+footprint_radius: 0.20
+footprint_offset: 0.07
+max_speed: 0.50
+max_lateral_speed: 0.22
+max_yaw_rate: 1.0
+base_height: 0.32
+lidar_mount: {lidar_x: 0.15, lidar_y: 0.0, lidar_z: 0.15, lidar_roll: 0.0, lidar_pitch: 0.0, lidar_yaw: 0.0}

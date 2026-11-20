@@ -58,7 +58,7 @@ class WaypointTasks:
                 or not 1 <= len(goal.poses) <= 100):
             return GoalResponse.REJECT
         for pose in goal.poses:
-            if pose.header.frame_id != 'map' or not all(map(math.isfinite, coordinates(pose))):
+            if pose.header.frame_id != mission.pct_frame_id or not all(map(math.isfinite, coordinates(pose))):
                 return GoalResponse.REJECT
             try:
                 heading(pose)
@@ -177,6 +177,8 @@ class WaypointTasks:
                 if stamp >= first and math.dist(pose[:2], previous[:2]) <= 0.025 and abs(angle) <= 0.05:
                     if stamp - first >= 600_000_000:
                         if self.stop_terminal == 'replan':
+                            if mission.fix_stamp_ns is None:
+                                return
                             self.replanned = True
                             self.begin_leg()
                         else:

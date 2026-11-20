@@ -37,6 +37,13 @@ def main():
     truth = np.array([-0.12, 0.06, 0.68, math.radians(168.0)])
     source = observation(walls, truth, random)
     validation = observation(walls, truth, random)
+    shifted = truth[:3] + [.13, -.11, .08]
+    correction = reference.tracking_error(validation, np.zeros(3), shifted, rotation(truth[3]))
+    assert correction is not None
+    np.testing.assert_allclose(shifted + correction[:3], truth[:3], atol=.035)
+    plane = surface(2, 0.0, bounds)
+    single_plane = LocalizationMap(plane)
+    assert single_plane.tracking_error(plane, np.zeros(3), np.zeros(3), np.eye(3)) is None
     seed = truth + [1.5, -0.50, 0.12, math.radians(38.0)]
     outcome = reference.match(source, seed, validation_xyz=validation)
     assert outcome['success'], outcome

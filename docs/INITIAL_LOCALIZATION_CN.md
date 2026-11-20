@@ -35,12 +35,14 @@ ros2 topic pub --once /initialpose geometry_msgs/msg/PoseWithCovarianceStamped \
 
 默认目标为 `goal_x:=2.0 goal_y:=-3.0 goal_z:=4.5`，使用楼宇地图坐标。`PCT` 用 `goal_z` 选层，确认该层的目标栅格可达后，在格内保留用户给定的 `x、y`。末点沿用该层的机身规划高度，本例约为 `(2.0, -3.0, 5.03) m`。目标越界、所选高度没有可通行表面或无法到达时，规划失败。
 
-已有自己的雷达和里程计时，可以单独运行 `ros2 launch legbot_bringup map_localizer.launch.py map_path:=/absolute/path/building.pcd`。原始地图需含 `x、y、z`，支持 `ascii` 和 `binary` 编码。通过 `cloud_topic`、`odom_frame`、`base_frame`、`lidar_frame` 指定实际话题和坐标系。接入全局导航时，原始点云和 PCT 分层地图需要使用同一个坐标系。
+已有自己的雷达、里程计和惯性测量单元（`IMU`）时，可以单独运行 `ros2 launch legbot_bringup map_localizer.launch.py map_path:=/absolute/path/building.pcd imu_topic:=/livox/imu`。将 `imu_topic` 换成设备实际话题，`sensor_msgs/Imu.linear_acceleration` 使用包含重力的比力（`m/s²`），静止时模长约为 `9.81 m/s²`。节点按消息时间戳查 `odom` 到 IMU 消息坐标系的变换。单独启动且留空 `imu_topic` 时，节点依赖里程计自身校平。跨楼层启动入口会从机器人配置读取 IMU 话题。
+
+原始地图需含 `x、y、z`，支持 `ascii` 和 `binary` 编码。通过 `cloud_topic`、`odom_frame`、`base_frame`、`lidar_frame` 指定实际话题和坐标系。原始定位点云与 PCT 分层地图须共用重力对齐的地图坐标系。
 
 ## 从初值到行走
 
 1. `FAST-LIO` 用惯性测量单元（IMU）初始化重力方向，生成以 `odom` 为参考的 `/fast_lio/cloud_registered` 点云和 `odom → base` 里程计变换。仿真用模拟激光雷达。真机需要对齐重力的里程计、正确雷达外参和时间戳。
-2. `/map_localizer` 收集发出初值后的新扫描，按相同时间戳查机身和雷达变换。默认用 4 帧匹配、后续 2 帧独立复核。采集期间位移超过 `0.15 m` 或转动超过 `8°` 会继续等待静止窗口。
+2. `/map_localizer` 收集发出初值后的新扫描，按相同时间戳查机身和雷达变换。默认用 4 帧匹配、后续 2 帧独立复核。采集期间位移超过 `0.15 m` 或转动超过 `8°` 会继续等待静止窗口。启用 IMU 后，用该窗口的静止比力校平横滚和俯仰。点云、雷达原点、机身和后续导航路线使用同一个三维坐标变换。
 3. 匹配器在初值周围搜索水平位置和航向，用 `GICP`（广义迭代最近点）细化 `x、y、z` 和偏航角。默认水平搜索半径为 `2.5 m`，偏航范围为 `±45°`，可接受的高度修正为 `±0.50 m`。这些是搜索边界，能否通过还取决于当前位置观察到的结构。
 4. 节点检查点云重合率、残差、几何约束和多解，并检查从雷达到回波的射线是否穿过地图表面。默认多候选模式还在附近上下最多 `6 m` 的地图范围内复核其他高度。如果另一高度在匹配帧和留出帧上都同样可信，就报楼层歧义，让用户重新选点。
 5. 接受后，`/pct/localized_start` 给出当前地图位姿，PCT 生成 `/pct_path_raw`，任务节点将路线转换为 `odom` 中的 `/pct_path`。SCAN 收到新路线并给出可执行的局部轨迹后，机器狗才开始走。
@@ -59,7 +61,13 @@ ros2 topic pub --once /initialpose geometry_msgs/msg/PoseWithCovarianceStamped \
 | `AMBIGUOUS_FLOOR` | 其他高度也能解释本次观测。确认楼层，并在能区分楼层的位置重新定位。 |
 | `LOST` | 定位节点检测到点云或里程计中断、时钟回退等异常。系统撤销行走许可，传感器恢复后重新给初值。 |
 
-每次重新发布 `/initialpose` 都会撤销上一次定位和任务的行走许可。失败时 `/localization/ready` 为 `false`，具体原因和匹配指标在 `/localization/status` 的 JSON 中。成功后的运动位姿由初始 `map → odom` 和连续 `FAST-LIO` 里程计组合得出。长期运行的地图漂移修正需要持续扫描匹配或重新定位。
+每次手动发布 `/initialpose` 都会撤销上一次定位和任务的行走许可。失败时 `/localization/ready` 为 `false`，具体原因和匹配指标在 `/localization/status` 的 JSON 中。
+
+## 行走中定位失效
+
+导航中约每 `0.3 s` 取一帧配准点云，用原始地图做局部点到面匹配。默认要求水平修正小于 `0.16 m`、高度修正小于 `0.17 m`、航向修正小于 `5°`，同时检查观测覆盖和几何约束。匹配缺少支持持续 `1.2 s`，或里程计发生超速位移跳变，系统撤销运动许可，Web 隐藏机身箭头并显示原因。上述参数控制何时撤销定位，实际到点精度由地图质量、定位和控制误差共同决定。
+
+自动恢复从最近可信位姿起步，计入制动期间受限的里程计增量，重新等待静止点云和重力观测。重新匹配通过且里程计确认站稳后，保留任务编号和已经完成的点，从当前位置重新规划当前段。匹配失败、传感器流超时或 `45 s` 内已经触发两次恢复后再次失配，系统保持禁止行走，需要用户重新给定初值。可以在停止重定位期间取消任务。
 
 ## `building2_9` 仿真验收
 

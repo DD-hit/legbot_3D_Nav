@@ -606,6 +606,9 @@ void Preprocess::default_handler(const sensor_msgs::msg::PointCloud2::UniquePtr 
   {
     if (point_filter_num > 1 && i % point_filter_num != 0)
       continue;
+    const auto &sample = pl_orig.points[i];
+    if (!std::isfinite(sample.x) || !std::isfinite(sample.y) || !std::isfinite(sample.z))
+      continue;
 
     PointType added_pt;
     added_pt.normal_x = 0;

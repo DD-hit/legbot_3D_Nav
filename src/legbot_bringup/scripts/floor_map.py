@@ -10,7 +10,7 @@ from ament_index_python.packages import get_package_share_directory
 
 
 class FloorMap:
-    def __init__(self, filename='building2_9_entry.pickle'):
+    def __init__(self, filename='building2_9_entry.pickle', floor_definitions=None, name='building2_9', version='entry-v1'):
         package = Path(get_package_share_directory('pct_planner'))
         data_dir = Path(os.environ.get('LEGBOT_DATA_DIR', 'data'))
         source = package / 'planner/scripts' / data_dir / 'tomogram' / filename
@@ -25,8 +25,15 @@ class FloorMap:
         self.offset = np.array(self.shape) // 2
         self.surfaces = []
         floors = []
-        for nominal, name in [(0, '入口层'), (1.5, '下层平台'), (3, '中层平台'), (4.5, '上层平台'), (6, '顶层')]:
-            valid = (heights >= nominal - 0.75) & (heights < nominal + 0.75) & np.isfinite(costs)
+        definitions = floor_definitions or [(0, '入口层'), (1.5, '下层平台'), (3, '中层平台'), (4.5, '上层平台'), (6, '顶层')]
+        levels = np.array([item[0] for item in definitions], dtype=float)
+        if not np.all(np.isfinite(levels)) or np.any(np.diff(levels) <= 0):
+            raise ValueError('Floor elevations must be finite and strictly increasing')
+        boundaries = (levels[:-1] + levels[1:]) / 2
+        for index, (nominal, label) in enumerate(definitions):
+            lower = boundaries[index - 1] if index else nominal - (boundaries[0] - nominal if len(boundaries) else 0.75)
+            upper = boundaries[index] if index < len(boundaries) else nominal + (nominal - boundaries[-1] if len(boundaries) else 0.75)
+            valid = (heights >= lower) & (heights < upper) & np.isfinite(costs)
             walkable = valid & (costs > 0) & (costs <= 20)
             score = np.where(walkable.any(axis=0), np.where(walkable, costs, np.inf),
                              np.where(valid, np.abs(heights - nominal), np.inf))
@@ -37,9 +44,9 @@ class FloorMap:
             self.surfaces.append((selected, allowed))
             pixels = np.where(allowed, 2, np.isfinite(selected)).astype('uint8')
             elevation_cm = np.rint(np.nan_to_num(selected, nan=-327.68) * 100).astype('<i2')
-            floors.append(dict(name=name, height=nominal, pixels=base64.b64encode(pixels.tobytes()).decode(),
+            floors.append(dict(name=label, height=nominal, pixels=base64.b64encode(pixels.tobytes()).decode(),
                                elevation_cm=base64.b64encode(elevation_cm.tobytes()).decode()))
-        self.payload = json.dumps(dict(name='building2_9', resolution=self.resolution, shape=self.shape,
+        self.payload = json.dumps(dict(name=name, version=version, resolution=self.resolution, shape=self.shape,
                                        origin=(self.center - self.offset * self.resolution).tolist(),
                                        floors=floors), ensure_ascii=False).encode()
 

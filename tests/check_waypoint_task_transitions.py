@@ -25,6 +25,7 @@ def check():
     node = Node('waypoint_task_test')
     try:
         node.ready = True
+        node.pct_frame_id, node.base_frame = 'survey_map', 'test_base'
         node.web = None
         node.fix_stamp_ns = 1
         node.initial_odom = (0., 0., 0.4, 0.)
@@ -56,6 +57,10 @@ def check():
         tasks.tick()
         assert tasks.state['phase'] == 'stopping'
         node.odom_stamp_ns += 700_000_000
+        node.fix_stamp_ns = None
+        tasks.tick()
+        assert tasks.state['phase'] == 'stopping' and tasks.state['index'] == 1
+        node.fix_stamp_ns = 2
         tasks.tick()
         assert tasks.replanned and tasks.state['index'] == 1
         tasks.stop('failed', '定位已失效')
@@ -89,6 +94,7 @@ def check():
         web.outside_fix = web.seed_pending = web.seed = None
         web.pending, web.condition, web.snapshot = queue.Queue(), threading.Condition(), b''
         web.update()
+        assert node.buffer.lookup_transform.call_args.args[:2] == ('survey_map', 'test_base')
         assert tasks.state['phase'] == 'stopping' and json.loads(web.snapshot)['localization']['state'] == 'LOST'
         transform.transform.translation.x = -5.5
         web.update()

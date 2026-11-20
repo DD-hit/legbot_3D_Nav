@@ -4,6 +4,8 @@
 import json
 import math
 import sys
+import numpy as np
+from scipy.spatial.transform import Rotation
 
 import rclpy
 from geometry_msgs.msg import PoseStamped, TransformStamped
@@ -48,13 +50,15 @@ def transform_xyz(local, odom, building, spawn):
 
 
 def transform_point(point, transform, inverse=False):
-    tx, ty, tz, angle = transform
-    cosine, sine = math.cos(angle), math.sin(angle)
-    px, py, pz = point
+    offset, rotation = transform
     if inverse:
-        dx, dy = px - tx, py - ty
-        return (cosine * dx + sine * dy, -sine * dx + cosine * dy, pz - tz)
-    return (tx + cosine * px - sine * py, ty + sine * px + cosine * py, tz + pz)
+        return rotation.inv().apply(np.subtract(point, offset)).tolist()
+    return (rotation.apply(point) + offset).tolist()
+
+
+def transform_heading(yaw, rotation):
+    forward = rotation.apply([math.cos(yaw), math.sin(yaw), 0.])
+    return math.atan2(forward[1], forward[0])
 
 
 class PctPathMission(Node):
@@ -71,6 +75,7 @@ class PctPathMission(Node):
         self.ready_topic = str(self.declare_parameter(
             'ready_topic', '/go2/demo_ready').value)
         self.frame_id = str(self.declare_parameter('frame_id', 'odom').value)
+        self.base_frame = self.declare_parameter('base_frame', 'base').value
         self.pct_frame_id = str(self.declare_parameter(
             'pct_frame_id', 'building_pct').value)
         self.publish_map_tf = bool(self.declare_parameter(
@@ -203,12 +208,19 @@ class PctPathMission(Node):
                 self.web.localization = status
             fix = int(status['fix_stamp_ns']) if status['state'] == 'LOCALIZED' else None
         except (KeyError, ValueError, TypeError):
+            status = {}
             fix = None
+        if self.tasks and self.tasks.active and status.get('automatic'):
+            if status['state'] in ('COLLECTING', 'MATCHING'):
+                self.tasks.stop('replan', '点云与地图不一致，停车重新定位')
+            elif status['state'] in ('LOST', 'FAILED'):
+                self.tasks.stop('failed', '自动定位未通过，请重新给定初始位姿')
         if fix == self.fix_stamp_ns:
             return
         if self.fix_stamp_ns is not None:
             if self.tasks and self.tasks.active:
-                self.tasks.stop('failed', '定位已失效，请重新定位后继续')
+                if not status.get('automatic'):
+                    self.tasks.stop('failed', '定位已失效，请重新定位后继续')
             else:
                 self.cancel_localized_mission()
         self.fix_stamp_ns = fix
@@ -280,14 +292,15 @@ class PctPathMission(Node):
         if Time.from_msg(latest.header.stamp).nanoseconds < self.fix_stamp_ns:
             return
         offset = latest.transform.translation
-        self.map_from_odom = (offset.x, offset.y, offset.z, yaw_from_quaternion(latest.transform.rotation))
+        quat = latest.transform.rotation
+        self.map_from_odom = ([offset.x, offset.y, offset.z], Rotation.from_quat([quat.x, quat.y, quat.z, quat.w]))
         start = PoseStamped()
         start.header.frame_id = self.pct_frame_id
         start.header.stamp = self.next_goal_stamp() if self.tasks else Time(nanoseconds=self.odom_stamp_ns).to_msg()
         self.request_stamp = start.header.stamp
         start_xyz = transform_point(self.initial_odom[:3], self.map_from_odom)
         start.pose.position.x, start.pose.position.y, start.pose.position.z = start_xyz
-        yaw = self.initial_odom[3] + self.map_from_odom[3]
+        yaw = transform_heading(self.initial_odom[3], self.map_from_odom[1])
         start.pose.orientation.z, start.pose.orientation.w = math.sin(0.5*yaw), math.cos(0.5*yaw)
         if self.tasks:
             self.tasks.request_route(start)
@@ -353,7 +366,7 @@ class PctPathMission(Node):
             if yaw is None:
                 rotation.z = rotation.w = 0.0
             else:
-                angle = (yaw - self.map_from_odom[3]) / 2
+                angle = transform_heading(yaw, self.map_from_odom[1].inv()) / 2
                 rotation.z, rotation.w = math.sin(angle), math.cos(angle)
         self.goal_stamp = (stamp.sec, stamp.nanosec)
 

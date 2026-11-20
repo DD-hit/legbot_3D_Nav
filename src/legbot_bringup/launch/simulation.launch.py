@@ -40,6 +40,7 @@ def setup(context):
     description = xacro.process_file(os.path.join(share('go2_description'), 'xacro/robot.xacro'),
                                      mappings={'GAZEBO': 'true', 'CLASSIC': 'false',
                                                'ENABLE_LIDAR': cfg('enable_lidar'),
+                                               **{key: cfg(key) for key in ('lidar_x','lidar_y','lidar_z','lidar_roll','lidar_pitch','lidar_yaw')},
                                                'controller_config': os.path.join(share('go2_description'), 'config', controller_file)}).toxml()
     world = cfg('world')
     gz_args = ['-r', '-v', '3']
@@ -64,7 +65,7 @@ def setup(context):
         '/imu@sensor_msgs/msg/Imu[gz.msgs.IMU',
         '/livox/imu@sensor_msgs/msg/Imu[gz.msgs.IMU',
     ]
-    bridge_remappings = [('/livox/scan/points', '/livox/points_raw')]
+    bridge_remappings = [('/livox/scan/points', cfg('raw_cloud_topic')), ('/livox/imu', cfg('imu_topic'))]
     if publish_ground_truth:
         bridge_arguments.append('/go2/odometry@nav_msgs/msg/Odometry[gz.msgs.Odometry')
         bridge_remappings.append(('/go2/odometry', '/Odometry_gazebo'))
@@ -111,8 +112,8 @@ def setup(context):
           if use_ground_truth else []),
         Node(package='legbot_bringup', executable='go2_command_adapter', parameters=[{
             'use_sim_time': True,
-            'odom_topic': '/Odometry_gazebo' if use_ground_truth else '/fast_lio/odometry_base',
-            'cloud_topic': '/livox/points_world' if use_ground_truth else '/fast_lio/cloud_registered',
+            'odom_topic': '/Odometry_gazebo' if use_ground_truth else cfg('base_odom_topic'),
+            'cloud_topic': '/livox/points_world' if use_ground_truth else cfg('registered_cloud_topic'),
             # Gazebo is intentionally slower than wall time while FAST-LIO and
             # RViz are active. Avoid chopping a valid locomotion command between
             # simulated sensor frames.
@@ -136,6 +137,10 @@ def setup(context):
 
 def generate_launch_description():
     return LaunchDescription([
+        *[DeclareLaunchArgument(key, default_value=value) for key, value in {
+            'lidar_x':'0.15','lidar_y':'0.0','lidar_z':'0.15','lidar_roll':'0.0','lidar_pitch':'0.0','lidar_yaw':'0.0',
+            'raw_cloud_topic':'/livox/points_raw','imu_topic':'/livox/imu',
+            'base_odom_topic':'/fast_lio/odometry_base','registered_cloud_topic':'/fast_lio/cloud_registered'}.items()],
         # FAST-LIO is the normal navigation source. Gazebo truth can be
         # published independently for evaluation without entering control.
         DeclareLaunchArgument('navigation_source', default_value='fastlio',

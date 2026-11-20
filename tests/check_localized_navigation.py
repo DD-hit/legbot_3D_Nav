@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import rclpy
+from scipy.spatial.transform import Rotation
 from geometry_msgs.msg import Point, PoseStamped, TransformStamped, Twist
 from nav_msgs.msg import Odometry, Path as RosPath
 from rclpy.time import Time
@@ -15,11 +16,20 @@ from std_msgs.msg import Bool, Header, Int32, String
 
 
 scripts = Path(__file__).resolve().parents[1] / 'src/legbot_bringup/scripts'
-Mission = runpy.run_path(str(scripts / 'pct_path_mission'))['PctPathMission']
+mission_module = runpy.run_path(str(scripts / 'pct_path_mission'))
+Mission = mission_module['PctPathMission']
 Adapter = runpy.run_path(str(scripts / 'go2_command_adapter'))['CommandAdapter']
 
 
 def run():
+    tilt = Rotation.from_euler('xyz', [3., -5., 32.], degrees=True)
+    transform = ([1., -2., 4.], tilt)
+    point = [9., 5., 3.]
+    mapped = mission_module['transform_point'](point, transform)
+    assert math.dist(mapped, tilt.apply(point) + transform[0]) < 1e-10
+    assert math.dist(mission_module['transform_point'](mapped, transform, inverse=True), point) < 1e-10
+    direction = tilt.inv().apply([0., 1., 0.])
+    assert abs(mission_module['transform_heading'](math.pi/2, tilt.inv()) - math.atan2(direction[1], direction[0])) < 1e-10
     rclpy.init(args=['--ros-args', '-p', 'use_map_localization:=true', '-p', 'pct_frame_id:=map',
                      '-p', 'require_map_localization:=true', '-p', 'require_navigation_data:=false'])
     mission, adapter = Mission(), Adapter()

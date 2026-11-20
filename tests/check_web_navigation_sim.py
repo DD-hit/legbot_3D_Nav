@@ -13,6 +13,7 @@ def main():
     parser.add_argument('--url', default='http://127.0.0.1:8765')
     parser.add_argument('--upper', action='store_true', help='use the longer upper-platform round trip')
     parser.add_argument('--entry-repair', action='store_true', help='walk to two verified former entry-layer holes')
+    parser.add_argument('--round-trip-only', action='store_true', help='navigate from the entry to the upper platform and return')
     args = parser.parse_args()
 
     def call(path, payload=None):
@@ -53,6 +54,9 @@ def main():
     call('seed', dict(**entry, yaw=0.05))
     state = wait(lambda state: state['ready'], 40)
     assert state['task']['phase'] == 'idle' and not state['route']
+    if args.round_trip_only:
+        terminal(submit([upper, entry]), 'succeeded', 2, 1500)
+        return
     terminal(submit([nearby]), 'succeeded', 1)
     if args.entry_repair:
         repaired = [dict(x=-4.6453, y=6.6132, floor=0), dict(x=-5.4453, y=7.2132, floor=0)]

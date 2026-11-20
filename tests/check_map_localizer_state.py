@@ -15,6 +15,7 @@ import rclpy
 from geometry_msgs.msg import PoseWithCovarianceStamped, TransformStamped
 from rclpy.clock import ClockType
 from rclpy.time import Time
+from sensor_msgs.msg import Imu
 from sensor_msgs_py.point_cloud2 import create_cloud_xyz32
 from std_msgs.msg import Header
 
@@ -73,6 +74,23 @@ def run():
         assert node.state == 'WAITING_FOR_INITIAL_POSE'
         node.on_seed(seed())
         assert node.state == 'COLLECTING' and node.seed == [0., 0., 0.32, 0.]
+        node.settings['imu_topic'] = '/test/imu'
+        node.buffer.set_transform_static(transform('odom', 'imu_test', 0., (0., 0., 0.)), 'test')
+        first, last = stamp(10.).nanoseconds, stamp(10.2).nanoseconds
+        assert node.gravity_alignment(first, last) is None
+        up = np.array([.05, -.025, 1.])
+        up /= np.linalg.norm(up)
+        imu = Imu()
+        imu.header.frame_id = 'imu_test'
+        imu.linear_acceleration.x, imu.linear_acceleration.y, imu.linear_acceleration.z = 9.81 * up
+        for seconds in np.linspace(10., 10.2, 11):
+            imu.header.stamp = stamp(seconds).to_msg()
+            node.on_imu(imu)
+        np.testing.assert_allclose(node.gravity_alignment(first, last) @ up, [0., 0., 1.], atol=1e-10)
+        imu.angular_velocity.x = 1.
+        node.on_imu(imu)
+        assert node.gravity_alignment(first, last) is None
+        node.settings['imu_topic'] = ''
         observe(9.99, with_transform=False)
         assert not node.frames
         observe(10.1, with_transform=False)
@@ -132,6 +150,22 @@ def run():
         node.poll()
         assert node.state == 'FAILED' and status()['reason'] == 'waiting_for_fresh_registered_cloud'
         assert node.broadcaster.sendTransform.call_count == published
+        node.trusted_pose = [5., 7., 3., 1.2]
+        node.trusted_odom = [0., 0., 0., 1.2]
+        node.trusted_rotation = module.Rotation.identity()
+        node.last_good = stamp(20.).nanoseconds
+        corrected = node.recovery_seed(np.array([.3, .2, .1]), 2.1, stamp(21.).nanoseconds)
+        np.testing.assert_allclose(corrected, [5.3, 7.2, 3.1, 2.1])
+        corrected = node.recovery_seed(np.array([3., 2., 1.]), 2.1, stamp(21.).nanoseconds)
+        np.testing.assert_allclose(corrected, [5., 7., 3., 2.1])
+        node.transform = TransformStamped()
+        node.state = 'LOCALIZED'
+        node.frames.clear()
+        for seconds in (22., 24.):
+            node.verify_tracking(stamp(seconds).nanoseconds)
+            assert node.state == 'COLLECTING' and status()['automatic'] and node.transform is None
+        node.verify_tracking(stamp(26.).nanoseconds)
+        assert node.state == 'LOST' and status()['reason'] == 'UNSTABLE_TRACKING'
         print('PASS: stamped base/lidar transforms, stationary window, supersession, fix, stream loss, timeout')
     finally:
         node.destroy_node()

@@ -1,0 +1,106 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>迹航 · 楼层确认</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f5f6f7;color:#20282d;font:15px/1.5 -apple-system,BlinkMacSystemFont,'PingFang SC',sans-serif}header,main{max-width:1270px;margin:auto;padding:20px}header{display:flex;align-items:center;gap:14px}header strong{font-size:19px}main{padding-top:0}h1{font-size:clamp(25px,3vw,36px);letter-spacing:-.04em;margin:0}h2{font-size:17px;margin:0}p{margin:4px 0 14px}small,.muted,header span{color:#576671}.layout{display:grid;grid-template-columns:minmax(0,1.65fr) minmax(320px,1fr);gap:16px;align-items:start}.panel{background:white;border:1px solid #dfe3e7;border-radius:16px;padding:16px;margin-bottom:14px}.heading,.actions{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}button,input{font:inherit}button,input[type=text],input[type=number]{border:1px solid #cad3d8;border-radius:7px;color:inherit;background:white;padding:6px 9px}button{cursor:pointer}button:disabled{opacity:.5;cursor:default}.primary{background:#17694e;color:white;border-color:transparent}.actions{margin-top:14px}.heading button{font-size:13px}canvas{margin:10px 0;display:block;width:100%;height:clamp(210px,27vh,330px);border-radius:9px;background:#f4f6f7}#side{touch-action:none;cursor:ns-resize}#top{height:clamp(230px,32vh,360px)}fieldset{padding:0;border:0;margin:0;min-width:0}.bounds{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin:12px 0}.bounds label{display:grid;grid-template-columns:auto minmax(70px,100px);align-items:center;justify-content:space-between;gap:4px}.bounds input[type=range]{width:100%;grid-column:1/-1;accent-color:#17694e}.bounds input[type=number]{width:100%}.bounds label:last-child input[type=range]{accent-color:#2861a1}.bounds label:last-child{color:#245b95}.bounds label:first-child{color:#17694e}.row{border-top:1px solid #e3e7eb;padding:10px 6px;display:grid;grid-template-columns:20px minmax(0,1fr) auto;gap:4px 8px;align-items:center}.row.active{background:#edf5f1}.row input[type=text]{width:100%}.row small{grid-column:2/-1}.row input[type=checkbox]{accent-color:#17694e;width:16px;height:16px}output,input[type=number]{font-variant-numeric:tabular-nums}#notice,#path{overflow-wrap:anywhere}#notice{margin-top:10px}.heading output{font-size:13px;color:#50616b}@media(max-width:800px){.layout{grid-template-columns:1fr}header,main{padding:12px}.panel{padding:12px}}
+</style></head><body><header><strong>迹航</strong><span>地图导入</span></header><main><h1>确认楼层</h1><p class="muted" id="source">正在读取点云…</p>
+<div class="layout"><div><section class="panel"><div class="heading"><h2 id="activeTitle">建筑侧视</h2><div><button id="zoom">放大当前高度</button> <button id="rotate">切换至 Y–Z</button></div></div><canvas id="side" aria-label="楼层采样上下限侧视图"></canvas><small>拖动左侧绿色把手调整下限，右侧蓝色把手调整上限。</small>
+<fieldset id="controls" disabled><div class="bounds"><label>下限（m）<input id="lower" type="number" step="0.001" required aria-label="下限（米）"><input id="lowerRange" type="range" step="0.001" aria-label="拖动下限"></label><label>上限（m）<input id="upper" type="number" step="0.001" required aria-label="上限（米）"><input id="upperRange" type="range" step="0.001" aria-label="拖动上限"></label></div></fieldset></section>
+<section class="panel"><div class="heading"><h2>楼面俯视</h2><output id="hits"></output></div><canvas id="top" aria-label="当前区间内点云俯视"></canvas><small>绿色为上下限之间的采样点，灰色为整栋点云投影。</small></section></div>
+<section class="panel"><div class="heading"><h2>候选楼层</h2><output id="counter"></output></div><p class="muted">选择楼层编辑采样范围，勾选要生成地图的楼层。</p><fieldset id="editor" disabled><div id="rows"></div><div class="actions"><button id="add">添加楼层</button><button class="primary" id="generate">确认并生成地图</button></div></fieldset><p id="notice" role="status"></p><details id="result" hidden><summary>地图配置文件</summary><small id="path"></small></details></section></div></main>
+<template id="studioMenu"><div><label><input type="checkbox" id="filterCloud" checked> 规划时排除空间孤立点</label></div><div id="replayOption" hidden><label><input id="replay" type="checkbox"> 重放已保存的人工修正</label></div><a id="editMap" href="editor" hidden>打开规划地图编辑器</a></template>
+<script type="module">
+const el = id => document.getElementById(id);
+let studio=false,tallyTimer,tallyVersion=0;
+const limits = ['lower','upper'];
+const round = value => Math.round(value*1000)/1000;
+const low = [Infinity,Infinity,Infinity], high = [-Infinity,-Infinity,-Infinity];
+let points, meta, rows=[], active, axis=0, building=false, zoomWindow, projection, drag, frame;
+function newRow(height, name, band, use=false) {
+  return {seed:height, name, use, lower:band?.[0]??Math.max(meta.bounds[0],round(height-.12)), upper:band?.[1]??Math.min(meta.bounds[1],round(height+.12))};
+}
+function nominal(row){return row.lower<=row.seed && row.seed<=row.upper ? row.seed : round((row.lower+row.upper)/2);}
+function edit(row){active=row;zoomWindow=null;el('controls').disabled=building||!active;el('zoom').textContent='放大当前高度';sync();}
+function sync(typing){
+  if(!active)return;
+  el('activeTitle').textContent='建筑侧视 · '+(active.name||'新楼层');
+  for(const key of limits){
+    const min=key==='upper'?round(active.lower+.001):meta.bounds[0];
+    const max=key==='lower'?round(active.upper-.001):meta.bounds[1];
+    for(const input of [el(key),el(key+'Range')]){
+      input.min=min;input.max=max;if(input!==typing)input.value=active[key].toFixed(3);
+    }
+  }
+  for(const row of rows){row.element.classList.toggle('active',row===active);row.detail.textContent=`${row.lower.toFixed(3)} ～ ${row.upper.toFixed(3)} m · 标高 ${nominal(row).toFixed(3)} m`+(row.area==null?'':` · 候选平台 ${row.area} m²`);}
+  cancelAnimationFrame(frame);frame=requestAnimationFrame(paint);count();
+}
+function setBound(key,value,typing){
+  if(!active||building||!Number.isFinite(value))return;
+  active[key]=round(Math.max(+el(key).min,Math.min(+el(key).max,value)));sync(typing);
+}
+for(const key of limits){
+  const input=el(key);
+  input.oninput=()=>{if(input.validity.valid)setBound(key,input.valueAsNumber,input);else count();};
+  input.onchange=()=>{if(input.validity.valid)setBound(key,input.valueAsNumber);else input.reportValidity();};
+  el(key+'Range').oninput=e=>setBound(key,+e.target.value);
+}
+function draw(canvas,horizontal,vertical,side){
+  const ratio=devicePixelRatio||1,w=canvas.clientWidth,h=canvas.clientHeight;
+  canvas.width=Math.round(w*ratio);canvas.height=Math.round(h*ratio);
+  const ctx=canvas.getContext('2d');ctx.scale(ratio,ratio);
+  const [bottom,top]=side && zoomWindow?zoomWindow:[low[vertical],high[vertical]];
+  const fitX=(w-30)/Math.max(.01,high[horizontal]-low[horizontal]),fitY=(h-42)/Math.max(.01,top-bottom);
+  const sx=side?fitX:Math.min(fitX,fitY),sy=side?fitY:sx;
+  const midX=(high[horizontal]+low[horizontal])/2,midY=(bottom+top)/2;
+  const y=value=>h/2-(value-midY)*sy;
+  const pixels=ctx.createImageData(canvas.width,canvas.height),buffer=new Uint32Array(pixels.data.buffer);
+  let count=0;
+  for(let idx=0;idx<points.length;idx+=3){
+    const z=points[idx+2],selected=z>=active.lower && z<=active.upper;
+    if(selected)count++;
+    const py=Math.round(y(points[idx+vertical])*ratio);if(py<0||py>=canvas.height)continue;
+    const px=Math.round((w/2+(points[idx+horizontal]-midX)*sx)*ratio),pos=py*canvas.width+px;
+    if(selected||!buffer[pos])buffer[pos]=selected?0xff537b14:0xffd6dcdf;
+  }
+  ctx.putImageData(pixels,0,0);ctx.font='12px system-ui';ctx.fillStyle='#596673';ctx.fillText(side?(axis?'Y–Z':'X–Z'):'X–Y',10,16);
+  if(!side){el('hits').textContent=(points.length/3===meta.count?'区间内 ':'预览抽样命中 ')+count.toLocaleString()+' 个点';if(studio&&points.length/3<meta.count){const version=++tallyVersion;clearTimeout(tallyTimer);tallyTimer=setTimeout(async()=>{try{const data=await(await fetch(`count?lo=${active.lower}&hi=${active.upper}`)).json();if(version===tallyVersion)el('hits').textContent='区间内 '+data.count.toLocaleString()+' 个点';}catch{}},150);}return;}
+  projection={value:py=>midY+(h/2-py)/sy,y};
+  ctx.fillStyle='rgba(36,128,105,.09)';ctx.fillRect(0,y(active.upper),w,y(active.lower)-y(active.upper));
+  for(const key of limits){const lower=key==='lower',line=y(active[key]),color=lower?'#17694e':'#2861a1';
+    ctx.strokeStyle=color;ctx.setLineDash(lower?[]:[5,3]);ctx.beginPath();ctx.moveTo(0,line);ctx.lineTo(w,line);ctx.stroke();
+    ctx.fillStyle=color;const handle=Math.min(h-20,Math.max(0,Math.round(line-10)));ctx.fillRect(lower?0:w-100,handle,100,20);
+    ctx.fillStyle='white';ctx.fillText((lower?'下限 ':'上限 ')+active[key].toFixed(3)+' m',lower?6:w-94,handle+14);
+  }
+}
+function paint(){if(points&&active){draw(el('side'),axis,2,true);draw(el('top'),0,1,false);}}
+const side=el('side');
+side.onpointerdown=event=>{if(!active||building||!projection)return;
+  const near=limits.map(key=>Math.abs(projection.y(active[key])-event.offsetY));
+  let key=near[0]<=near[1]?'lower':'upper';if(event.offsetX<=100)key='lower';else if(event.offsetX>=side.clientWidth-100)key='upper';
+  drag={key,id:event.pointerId,projection};side.setPointerCapture(event.pointerId);setBound(key,projection.value(event.offsetY));
+};
+side.onpointermove=event=>{if(drag?.id===event.pointerId)setBound(drag.key,drag.projection.value(event.offsetY));};
+side.onlostpointercapture=()=>{drag=null;};
+el('zoom').onclick=()=>{if(!active)return;if(zoomWindow)zoomWindow=null;else{const margin=Math.max(.12,(active.upper-active.lower)*.6);zoomWindow=[Math.max(meta.bounds[0],active.lower-margin),Math.min(meta.bounds[1],active.upper+margin)];}el('zoom').textContent=zoomWindow?'查看全部高度':'放大当前高度';paint();};
+el('rotate').onclick=()=>{axis=1-axis;el('rotate').textContent=axis?'切换至 X–Z':'切换至 Y–Z';paint();};
+function count(){const n=rows.filter(row=>row.use).length;el('counter').textContent=`已选 ${n} 层`;el('generate').disabled=building||!n||limits.some(key=>!el(key).validity.valid);}
+function render(){el('rows').replaceChildren();for(const row of rows){
+  const entry=document.createElement('div');entry.className='row';entry.innerHTML='<input type="checkbox" aria-label="纳入地图"><input type="text" maxlength="64" aria-label="楼层名称"><button>编辑范围</button><small></small>';
+  const [use,name,view,detail]=entry.children;row.element=entry;row.detail=detail;use.checked=row.use;name.value=row.name;
+  view.onclick=()=>edit(row);use.onchange=()=>{row.use=use.checked;edit(row);};name.onfocus=()=>edit(row);name.oninput=()=>{row.name=name.value;sync();};el('rows').append(entry);
+}}
+el('add').onclick=()=>{const height=active?nominal(active):round((meta.bounds[0]+meta.bounds[1])/2);const row=newRow(height,'',null,true);rows.push(row);render();edit(row);row.element.children[1].focus();};
+function showState(state){if(studio){el('replayOption').hidden=!state.cursor;el('editMap').hidden=!state.gen||state.status==='building';if(building&&state.status==='done'){location.href='editor';return;}}building=state.status==='building';el('editor').disabled=building;el('controls').disabled=building||!active;count();el('notice').textContent=building?'正在生成地图…':state.status==='done'?'上次生成成功 · '+state.floors.length+' 个楼层':state.message||'';el('result').hidden=state.status!=='done';el('path').textContent=state.manifest||'';}
+async function check(){try{const res=await fetch('status');if(!res.ok)throw Error('状态读取失败');showState(await res.json());}catch(error){el('notice').textContent=error.message;}if(building)setTimeout(check,1000);}
+el('generate').onclick=async()=>{const layers=rows.filter(row=>row.use).map(row=>({height:nominal(row),name:row.name.trim(),lower:row.lower,upper:row.upper}));const payload=studio?{layers,filtered:el('filterCloud').checked,replay:el('replay').checked}:{layers};showState({status:'building'});try{const res=await fetch('confirm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const result=await res.json();if(!res.ok)throw Error(result.message);check();}catch(error){showState({message:error.message});}};
+try{
+  meta=await (await fetch('map')).json();points=new Float32Array(await (await fetch('points')).arrayBuffer());studio=meta.tile_count!==undefined;
+  for(let idx=0;idx<points.length;idx++){const dim=idx%3;low[dim]=Math.min(low[dim],points[idx]);high[dim]=Math.max(high[dim],points[idx]);}
+  [low[2],high[2]]=meta.bounds;el('source').textContent=`${meta.source} · ${meta.count.toLocaleString()} 个点`;
+  if(studio){el('rows').after(el('studioMenu').content.cloneNode(true));const home=document.createElement('a');home.href='/';home.textContent='地图工作室';document.querySelector('header strong').replaceWith(home);el('source').textContent+=` · ${meta.tile_count} 个空间分块 · ${meta.invalid} 个无效点 · ${meta.isolated} 个疑似孤立点`;}
+  rows=meta.candidates.map((item,idx)=>({...newRow(item.height,'平台 '+(idx+1)),area:item.area}));
+  for(const [idx,[height,name]] of (meta.state.floors||[]).entries()){
+    const saved=newRow(height,name,meta.state.floor_ranges?.[idx],true);
+    const match=rows.findIndex(row=>!row.use&&Math.abs(row.seed-height)<.005);if(match>=0)Object.assign(rows[match],saved);else rows.push(saved);
+  }
+  render();edit(rows.find(row=>row.use)||rows[0]);showState(meta.state);if(building)check();new ResizeObserver(()=>sync()).observe(side);
+}catch(error){el('source').textContent='无法读取点云 · '+error.message;}
+</script></body></html>

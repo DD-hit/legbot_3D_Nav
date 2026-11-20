@@ -43,12 +43,27 @@ async function loadStructures() {
   return sheet.width === cols && sheet.height === rows * floors.length ? { sheet, stairs: bundle.stairs || [] } : null;
 }
 const structures = await loadStructures().catch(() => null);
+function stairLocal(stair, x, y) {
+  const angle = stair.angle || 0, cos = Math.cos(angle), sin = Math.sin(angle);
+  return [cos*x + sin*y, -sin*x + cos*y];
+}
+function stairCorners(stair) {
+  const angle = stair.angle || 0, cos = Math.cos(angle), sin = Math.sin(angle);
+  return [stair.x-stair.width/2, stair.x+stair.width/2].flatMap(x =>
+    [stair.start, stair.end].map(y => [cos*x-sin*y, sin*x+cos*y]));
+}
+function overlapsStair(first, second) {
+  return [[first, second], [second, first]].every(([frame, other]) => {
+    const corners = stairCorners(other).map(([x,y]) => stairLocal(frame,x,y));
+    const xs = corners.map(p=>p[0]), ys = corners.map(p=>p[1]);
+    return Math.min(...xs) < frame.x+frame.width/2 && Math.max(...xs) > frame.x-frame.width/2 &&
+      Math.min(...ys) < Math.max(frame.start,frame.end) && Math.max(...ys) > Math.min(frame.start,frame.end);
+  });
+}
 const stairLanes = floors.map((_, floor) => {
   const stairs = (structures?.stairs || []).filter(stair => stair.floor === floor || stair.to === floor);
   return stairs.map(stair => {
-    const group = stairs.filter(other => Math.abs(other.x - stair.x) < (stair.width + other.width) / 2 &&
-      Math.max(Math.min(other.start, other.end), Math.min(stair.start, stair.end)) <
-      Math.min(Math.max(other.start, other.end), Math.max(stair.start, stair.end)));
+    const group = stairs.filter(other => overlapsStair(other, stair));
     const index = group.indexOf(stair), count = group.length, width = stair.width / count;
     return {stair, index, count, width, left: stair.x - stair.width / 2 + index * width};
   });
@@ -156,6 +171,10 @@ function drawStair({stair, index, count, left: laneLeft, width: laneWidth}) {
   const end = outgoing ? top : bottom, start = outgoing ? bottom : top;
   const mid = (start + end) / 2 + (index - (count - 1) / 2) * Math.min(54, Math.abs(end - start) / 3);
   ctx.save();
+  const origin = screen(0, 0), angle = stair.angle || 0;
+  ctx.translate(...origin);
+  ctx.rotate(-angle);
+  ctx.translate(-origin[0], -origin[1]);
   ctx.strokeStyle = '#557571';
   ctx.fillStyle = 'rgba(169, 198, 190, .32)';
   ctx.fillRect(left, bottom, width, top - bottom);
@@ -179,14 +198,19 @@ function drawStair({stair, index, count, left: laneLeft, width: laneWidth}) {
   ctx.lineTo(cx + Math.abs(barb) * .65, tip - barb);
   ctx.stroke();
   const text = (outgoing ? '上行 · ' : '下行 · ') + floors[outgoing ? stair.to : stair.floor].name;
+  ctx.restore();
+  ctx.save();
   ctx.font = '600 12px sans-serif';
   const size = ctx.measureText(text).width;
-  const labelX = left + width + size + 16 < canvas.clientWidth ? left + width + 5 : left - size - 14;
+  const dx=left+width-origin[0], dy=mid-origin[1];
+  const anchorX=origin[0]+Math.cos(angle)*dx+Math.sin(angle)*dy;
+  const anchorY=origin[1]-Math.sin(angle)*dx+Math.cos(angle)*dy;
+  const labelX = anchorX + size + 16 < canvas.clientWidth ? anchorX + 5 : anchorX - width - size - 14;
   ctx.fillStyle = 'rgba(255,255,255,.94)';
-  ctx.fillRect(labelX, mid - 11, size + 10, 22);
+  ctx.fillRect(labelX, anchorY - 11, size + 10, 22);
   ctx.fillStyle = '#234c47';
   ctx.textAlign = 'left';
-  ctx.fillText(text, labelX + 5, mid + 4);
+  ctx.fillText(text, labelX + 5, anchorY + 4);
   ctx.restore();
 }
 function draw() {
@@ -288,6 +312,10 @@ const labels = {
   LOST: '定位丢失',
 };
 const reasons = {
+  WAITING_FOR_STATIONARY_GRAVITY: '缺少与静止点云同步的有效重力观测',
+  MAP_TRACKING_MISMATCH: '实时点云与地图不一致，停车重新匹配',
+  ODOMETRY_JUMP: '里程计位姿跳变，停车重新匹配',
+  UNSTABLE_TRACKING: '定位持续不稳定，请重新给定初始位姿',
   AMBIGUOUS_FLOOR: '多个楼层结构相似，请在楼梯口或转角重试',
   LOW_OVERLAP: '点云重合不足，请调整位置和朝向',
   MAP_OUT_OF_COVERAGE: '初值超出地图范围',
@@ -355,7 +383,7 @@ function update() {
   byId('link').dataset.online = online;
   byId('loc').dataset.ok = !!localizedPose();
   byId('loc').textContent =
-    (labels[loc.state] || '等待机器人') +
+    (loc.automatic && ['COLLECTING','MATCHING'].includes(loc.state) ? '停车重新定位' : labels[loc.state] || '等待机器人') +
     (['FAILED', 'LOST'].includes(loc.state) ? ' · ' + (reasons[loc.reason] || loc.reason) : '');
   const waitingHint = loc.state === 'WAITING_FOR_INITIAL_POSE'
     ? '默认仿真出生点在入口层 (−5.5, 6.0) m，朝地图右方。'
@@ -363,7 +391,7 @@ function update() {
   byId('pose').textContent = localizedPose()
     ? `${floorName(state.pose[2] - 0.32)} · (${state.pose[0].toFixed(2)}, ${state.pose[1].toFixed(2)}) m · ${degrees(state.pose[3])}`
     : waitingHint;
-  if (localizedPose() && loc.pose && state.seed) {
+  if (localizedPose() && loc.pose && state.seed && !loc.automatic) {
     const delta = loc.pose[3] - state.seed[3];
     byId('pose').textContent += `\n初值修正 ${Math.hypot(loc.pose[0] - state.seed[0], loc.pose[1] - state.seed[1]).toFixed(2)} m / ${degrees(Math.atan2(Math.sin(delta), Math.cos(delta)))}`;
   }
@@ -566,10 +594,13 @@ function stairName(stair) {
 }
 function targetSurfaces(x, y, viewFloor) {
   const cell = cellIndex(x, y);
-  const matches = stairLanes[viewFloor].filter(({stair}) => Math.abs(x - stair.x) <= stair.width / 2 &&
-    y >= Math.min(stair.start, stair.end) && y <= Math.max(stair.start, stair.end));
+  const matches = stairLanes[viewFloor].flatMap(({stair}) => {
+    const [across, along] = stairLocal(stair, x, y);
+    return Math.abs(across-stair.x) <= stair.width/2 && along >= Math.min(stair.start,stair.end) &&
+      along <= Math.max(stair.start,stair.end) ? [stairSurface(stair,cell,along)] : [];
+  });
   if (!matches.length) return [{floor: viewFloor, value: floors[viewFloor].cells[cell] || 0}];
-  return matches.map(({stair}) => stairSurface(stair, cell, y));
+  return matches;
 }
 function stairSurface(stair, cell, y) {
   const rise = floors[stair.to].height - floors[stair.floor].height;
@@ -714,7 +745,9 @@ canvas.addEventListener(
 );
 async function openLibraryDatabase() {
   if (!window.indexedDB) throw Error('浏览器存储不可用');
-  const request = indexedDB.open(`迹航/${atlas.name}/${atlas.origin}/${atlas.shape}/${resolution}`, 1);
+  const originalMap = atlas.name === 'building2_9' && (!atlas.version || atlas.version === 'entry-v1');
+  const mapKey = originalMap ? atlas.name : `${atlas.name}@${atlas.version ?? 'unversioned'}`;
+  const request = indexedDB.open(`迹航/${mapKey}/${atlas.origin}/${atlas.shape}/${resolution}`, 1);
   request.onupgradeneeded = () => request.result.createObjectStore('records', {keyPath: 'id'});
   return new Promise((resolve, reject) => {
     request.onsuccess = () => resolve(request.result);

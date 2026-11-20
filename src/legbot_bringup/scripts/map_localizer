@@ -6,6 +6,7 @@ from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
+from scipy.spatial.transform import Rotation
 import rclpy
 from geometry_msgs.msg import PoseWithCovarianceStamped, TransformStamped
 from rcl_interfaces.msg import ParameterDescriptor
@@ -14,7 +15,7 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, qos_profile_sensor_data
 from rclpy.time import Time
-from sensor_msgs.msg import PointCloud2
+from sensor_msgs.msg import Imu, PointCloud2
 from sensor_msgs_py import point_cloud2
 from std_msgs.msg import Bool, String
 from tf2_ros import Buffer, TransformBroadcaster, TransformException, TransformListener
@@ -50,6 +51,9 @@ class MapLocalizer(Node):
             'yaw_radius': 45.0, 'scan_frames': 4, 'validation_frames': 2,
             'max_scan_translation': 0.15, 'max_scan_rotation_deg': 8.0,
             'request_timeout': 25.0, 'sensor_timeout': 3.0,
+            'imu_topic': '',
+            'tracking_xy_tolerance': 0.16, 'tracking_z_tolerance': 0.17, 'tracking_yaw_deg': 5.0,
+            'tracking_grace': 1.2, 'tracking_max_speed': 1.5,
         }
         for name, value in defaults.items():
             self.declare_parameter(name, value, ParameterDescriptor(read_only=name != 'floor_height'))
@@ -62,7 +66,8 @@ class MapLocalizer(Node):
             if not 1 <= self.settings[name] <= 32:
                 raise ValueError(f'{name} must be between 1 and 32')
         for name in ('xy_radius', 'yaw_radius', 'request_timeout', 'sensor_timeout',
-                     'max_scan_translation', 'max_scan_rotation_deg'):
+                     'max_scan_translation', 'max_scan_rotation_deg', 'tracking_xy_tolerance',
+                     'tracking_z_tolerance', 'tracking_yaw_deg', 'tracking_grace', 'tracking_max_speed'):
             if not math.isfinite(self.settings[name]) or self.settings[name] <= 0.0:
                 raise ValueError(f'{name} must be positive and finite')
         frame_ids = [self.settings[name] for name in ('map_frame', 'odom_frame', 'base_frame')]
@@ -80,6 +85,13 @@ class MapLocalizer(Node):
         self.frame_count = self.settings['scan_frames'] + self.settings['validation_frames']
         self.frames = deque(maxlen=self.frame_count + 2)
         self.transform = None
+        self.automatic = False
+        self.recoveries = deque()
+        self.last_checked = -1
+        self.imu_samples = deque(maxlen=4000)
+        self.last_good = -1
+        self.trusted_pose = None
+        self.trusted_odom = None
         self.last_sensor = None
         self.last_stamp = -1
         self.last_odom_stamp = -1
@@ -95,6 +107,8 @@ class MapLocalizer(Node):
         self.create_subscription(PoseWithCovarianceStamped, '/initialpose', self.on_seed, 10)
         self.create_subscription(PointCloud2, self.settings['cloud_topic'], self.on_cloud,
                                  qos_profile_sensor_data)
+        if self.settings['imu_topic']:
+            self.create_subscription(Imu, self.settings['imu_topic'], self.on_imu, qos_profile_sensor_data)
         self.create_timer(0.2, self.poll, clock=Clock(clock_type=ClockType.STEADY_TIME))
         self.report('WAITING_FOR_INITIAL_POSE', 'submit_initialpose_in_map')
 
@@ -103,14 +117,18 @@ class MapLocalizer(Node):
         if state != 'LOCALIZED':
             self.transform = None
         self.ready_pub.publish(Bool(data=state == 'LOCALIZED'))
-        payload = dict(state=state, reason=reason, request_id=self.generation, seed_stamp_ns=self.seed_stamp_ns, **details)
+        payload = dict(state=state, reason=reason, request_id=self.generation, seed_stamp_ns=self.seed_stamp_ns,
+                       automatic=self.automatic, **details)
         self.status_pub.publish(String(data=json.dumps(payload)))
         self.get_logger().info(f'initial localization {self.generation}: {state} ({reason})')
 
     def on_seed(self, message):
+        self.automatic = False
+        self.recoveries.clear()
         self.generation += 1
         self.seed_stamp_ns = Time.from_msg(message.header.stamp).nanoseconds
         self.frames.clear()
+        self.imu_samples.clear()
         self.transform = None
         self.last_sensor = None
         self.last_odom_stamp = -1
@@ -162,10 +180,88 @@ class MapLocalizer(Node):
             return
         self.last_stamp = timestamp.nanoseconds
         self.last_sensor = time.monotonic()
-        if self.state == 'COLLECTING':
+        if self.state in ('LOCALIZED', 'COLLECTING'):
             points = np.column_stack([fields[name][valid] for name in ('x', 'y', 'z')])
             stride = max(1, (len(points) + 23999) // 24000)
             self.frames.append((timestamp, points[::stride].copy()))
+
+    def on_imu(self, message):
+        if self.state != 'COLLECTING':
+            return
+        stamp = Time.from_msg(message.header.stamp)
+        acc, gyro = message.linear_acceleration, message.angular_velocity
+        self.imu_samples.append((stamp, message.header.frame_id, [acc.x, acc.y, acc.z], [gyro.x, gyro.y, gyro.z]))
+
+    def gravity_alignment(self, first, last):
+        if not self.settings['imu_topic']:
+            return np.eye(3)
+        samples = [sample for sample in self.imu_samples if first <= sample[0].nanoseconds <= last]
+        times = [first, *(sample[0].nanoseconds for sample in samples), last]
+        if len(samples) < 6 or np.max(np.diff(times)) > 150_000_000:
+            return None
+        vectors = []
+        for stamp, frame, acceleration, gyro in samples[::max(1, len(samples)//24)]:
+            if (not frame or not np.isfinite(gyro).all() or abs(np.linalg.norm(acceleration)-9.81) > .8
+                    or np.linalg.norm(gyro) > .25):
+                return None
+            try:
+                tf = self.buffer.lookup_transform(self.settings['odom_frame'], frame, stamp)
+                orient = Rotation.from_quat(unit_quaternion(tf.transform.rotation))
+            except (TransformException, ValueError):
+                return None
+            vectors.append(orient.apply(acceleration))
+        mean = np.mean(vectors, axis=0)
+        if not np.isfinite(mean).all() or np.max(np.linalg.norm(vectors-mean, axis=1)) > .45:
+            return None
+        up = mean / np.linalg.norm(mean)
+        if up[2] < math.cos(math.radians(12)):
+            return None
+        return Rotation.from_quat([up[1], -up[0], 0., 1. + up[2]]).as_matrix()
+
+    def verify_tracking(self, now_ns):
+        jump = False
+        if self.frames and self.last_stamp - self.last_checked >= 300_000_000:
+            for stamp, points in reversed(self.frames):
+                if stamp.nanoseconds <= self.last_checked:
+                    break
+                try:
+                    base = self.buffer.lookup_transform(self.settings['odom_frame'], self.settings['base_frame'], stamp).transform
+                except TransformException:
+                    continue
+                origin = np.array([base.translation.x, base.translation.y, base.translation.z])
+                transform = self.transform.transform
+                orientation = Rotation.from_quat(unit_quaternion(transform.rotation))
+                offset = transform.translation
+                position = orientation.apply(origin) + [offset.x, offset.y, offset.z]
+                self.last_checked = stamp.nanoseconds
+                elapsed = (self.last_checked - self.last_good) * 1e-9
+                jump = np.linalg.norm(position - self.trusted_pose[:3]) > .24 + self.settings['tracking_max_speed'] * elapsed
+                if jump:
+                    break
+                delta = self.reference.tracking_error(points, origin, position, orientation.as_matrix())
+                if (delta is not None and np.linalg.norm(delta[:2]) < self.settings['tracking_xy_tolerance'] and
+                        abs(delta[2]) < self.settings['tracking_z_tolerance'] and
+                        abs(math.degrees(delta[3])) < self.settings['tracking_yaw_deg']):
+                    self.last_good = self.last_checked
+                    forward = (orientation * Rotation.from_quat(unit_quaternion(base.rotation))).as_matrix()[:, 0]
+                    self.trusted_pose = [*(position + delta[:3]), math.atan2(forward[1], forward[0]) + delta[3]]
+                    self.trusted_odom = [*origin, heading(base.rotation)]
+                break
+        if not jump and (now_ns - self.last_good) * 1e-9 < self.settings['tracking_grace']:
+            return
+        self.automatic = True
+        while self.recoveries and now_ns - self.recoveries[0] > 45_000_000_000:
+            self.recoveries.popleft()
+        if len(self.recoveries) >= 2:
+            self.report('LOST', 'UNSTABLE_TRACKING')
+            return
+        self.recoveries.append(now_ns)
+        self.seed_time = now_ns
+        self.frames.clear()
+        self.imu_samples.clear()
+        self.deadline = time.monotonic() + self.settings['request_timeout']
+        self.wait_reason = 'ODOMETRY_JUMP' if jump else 'MAP_TRACKING_MISMATCH'
+        self.report('COLLECTING', self.wait_reason)
 
     def match(self, frames, seed, origin, odom_heading, sensor_origin):
         if self.reference is None:
@@ -177,6 +273,19 @@ class MapLocalizer(Node):
         return self.reference.match(source, seed, mode=self.settings['mode'],
                                     validation_xyz=validation, xy_radius=self.settings['xy_radius'],
                                     yaw_radius=self.settings['yaw_radius'], sensor_origin=sensor_origin)
+
+    def recovery_seed(self, origin, yaw, stamp):
+        pose = np.array(self.trusted_pose)
+        elapsed = max(0., (stamp - self.last_good) * 1e-9)
+        delta = self.trusted_rotation.apply(origin - self.trusted_odom[:3])
+        if np.linalg.norm(delta[:2]) <= min(2., .15 + .8 * elapsed):
+            pose[:2] += delta[:2]
+        if abs(delta[2]) <= min(.45, .10 + .35 * elapsed):
+            pose[2] += delta[2]
+        turn = math.remainder(yaw - self.trusted_odom[3], 2*math.pi)
+        if abs(turn) <= .15 + 1.7 * elapsed:
+            pose[3] += turn
+        return pose.tolist()
 
     def start_job(self):
         odom_frame = self.settings['odom_frame']
@@ -221,17 +330,24 @@ class MapLocalizer(Node):
                 rotation_span > self.settings['max_scan_rotation_deg']):
             self.wait_reason = 'robot_moved_during_collection'
             return
-        sensor_origin = (positions[0] - origin) @ rotation_z(yaw)
-        frames = [points for _, points, _ in observations]
-        future = self.executor_pool.submit(self.match, frames, self.seed, origin, yaw, sensor_origin)
-        self.job = (future, self.generation, origin, yaw, stamp.nanoseconds)
+        tilt = self.gravity_alignment(stamp.nanoseconds, observations[-1][0].nanoseconds)
+        if tilt is None:
+            self.wait_reason = 'WAITING_FOR_STATIONARY_GRAVITY'
+            return
+        forward = tilt @ Rotation.from_quat(unit_quaternion(base.rotation)).as_matrix()[:, 0]
+        leveled_yaw = math.atan2(forward[1], forward[0])
+        sensor_origin = (tilt @ (positions[0] - origin)) @ rotation_z(leveled_yaw)
+        frames = [(points - origin) @ tilt.T + origin for _, points, _ in observations]
+        seed = self.recovery_seed(origin, yaw, stamp.nanoseconds) if self.automatic else self.seed
+        future = self.executor_pool.submit(self.match, frames, seed, origin, leveled_yaw, sensor_origin)
+        self.job = (future, self.generation, origin, yaw, stamp.nanoseconds, leveled_yaw, tilt)
         self.last_odom_stamp = stamp.nanoseconds
         self.last_odom_time = time.monotonic()
         self.frames.clear()
         self.report('MATCHING', 'scoring_map_candidates', scan_spread=self.scan_spread)
 
     def finish_job(self):
-        future, generation, origin, odom_heading, reference_stamp = self.job
+        future, generation, origin, odom_heading, reference_stamp, leveled_yaw, tilt = self.job
         self.job = None
         if generation != self.generation or self.state != 'MATCHING':
             return
@@ -247,17 +363,21 @@ class MapLocalizer(Node):
             self.report('FAILED', result['reason'], metrics=result['metrics'], seconds=result['seconds'])
             return
         pose = result['pose']
-        yaw_delta = pose[3] - odom_heading
-        offset = np.asarray(pose[:3]) - rotation_z(yaw_delta) @ origin
+        orientation = Rotation.from_matrix(rotation_z(pose[3] - leveled_yaw) @ tilt)
+        offset = np.asarray(pose[:3]) - orientation.apply(origin)
         transform = TransformStamped()
         transform.header.frame_id = self.settings['map_frame']
         transform.child_frame_id = self.settings['odom_frame']
         translation = transform.transform.translation
         translation.x, translation.y, translation.z = offset.tolist()
-        transform.transform.rotation.z = math.sin(yaw_delta / 2)
-        transform.transform.rotation.w = math.cos(yaw_delta / 2)
+        quaternion = transform.transform.rotation
+        quaternion.x, quaternion.y, quaternion.z, quaternion.w = orientation.as_quat().tolist()
         self.transform = transform
         fix_stamp = self.publish_transform()
+        self.trusted_pose = list(pose)
+        self.trusted_rotation = orientation
+        self.trusted_odom = [*origin, odom_heading]
+        self.last_good = self.last_checked = fix_stamp
         self.report('LOCALIZED', result['reason'], pose=pose, reference_stamp_ns=reference_stamp,
                     fix_stamp_ns=fix_stamp, metrics=result['metrics'], seconds=result['seconds'],
                     scan_spread=self.scan_spread)
@@ -307,7 +427,9 @@ class MapLocalizer(Node):
         if self.state == 'COLLECTING' and len(self.frames) >= self.frame_count and self.job is None:
             self.start_job()
         if self.state == 'LOCALIZED':
-            self.publish_transform()
+            self.verify_tracking(ros_now)
+            if self.state == 'LOCALIZED':
+                self.publish_transform()
         self.ready_pub.publish(Bool(data=self.state == 'LOCALIZED'))
 
     def destroy_node(self):

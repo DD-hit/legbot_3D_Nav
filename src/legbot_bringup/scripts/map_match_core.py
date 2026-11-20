@@ -161,6 +161,33 @@ class LocalizationMap:
         weights = np.exp(-0.5 * (distances / 0.38) ** 2).astype(np.float32)
         return weights, lower, resolution
 
+    def tracking_error(self, scan, odom_base, map_base, map_rotation):
+        source = subsample(scan_points(scan - odom_base, .12), 1600) @ map_rotation.T
+        if len(source) < 80:
+            return None
+        shift = np.zeros(4)
+        for _ in range(8):
+            lever = source @ rotation(shift[3]).T
+            moved = lever + map_base + shift[:3]
+            distance, index = self.tree.query(moved)
+            keep = distance < .30
+            if np.mean(keep) < .55 or np.count_nonzero(keep) < 60:
+                return None
+            normals = self.normals[index[keep]]
+            offsets = lever[keep]
+            residual = np.sum((moved[keep] - self.points[index[keep]]) * normals, axis=1)
+            jacobian = np.column_stack((normals, offsets[:, 0]*normals[:, 1]-offsets[:, 1]*normals[:, 0]))
+            weight = np.sqrt(np.minimum(1., .055 / np.maximum(abs(residual), 1e-6)))
+            step, _, rank, singular = np.linalg.lstsq(jacobian*weight[:, None], -residual*weight, rcond=None)
+            if rank != 4 or singular[-1] < .014 * singular[0]:
+                return None
+            shift += step
+            if np.linalg.norm(step) < .002:
+                break
+        if np.mean(abs(residual) < .09) < .68:
+            return None
+        return shift
+
     def coarse_seeds(self, source, initial, xy_radius, yaw_radius, grid):
         source = subsample(voxel_points(source, 0.39), 800)
         offsets = np.linspace(-xy_radius, xy_radius, 2 * math.ceil(xy_radius / 0.50) + 1)
