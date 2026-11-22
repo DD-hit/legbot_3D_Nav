@@ -1,0 +1,2 @@
+# Additional tracking allowance in planning only, outside the padded standing footprint.
+tracking_margin_m: 0.10

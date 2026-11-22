@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.16)
+project(d1_pct_astar LANGUAGES CXX)
+find_package(Eigen3 REQUIRED)
+find_package(pybind11 CONFIG REQUIRED)
+pybind11_add_module(a_star NO_EXTRAS upstream/a_star/a_star_search.cc upstream/a_star/python_interface.cc)
+target_include_directories(a_star PRIVATE upstream)
+target_link_libraries(a_star PRIVATE Eigen3::Eigen)
+target_compile_features(a_star PRIVATE cxx_std_17)

@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="zh-CN">
+  <meta charset="utf-8" /><meta
+    name="viewport"
+    content="width=device-width,initial-scale=1"
+  /><title>地图工作室 · 迹航</title
+  ><style>
+    * {
+      box-sizing: border-box;
+    }
+    body {
+      margin: 0;
+      color: #192d31;
+      background: #f4f6f6;
+      font:
+        16px/1.5 -apple-system,
+        BlinkMacSystemFont,
+        "PingFang SC",
+        sans-serif;
+    }
+    header {
+      border-bottom: 1px solid #dce3e3;
+      background: #fff;
+      padding: 17px max(5vw, 22px);
+      font-weight: 650;
+    }
+    main {
+      max-width: 900px;
+      margin: 8vh auto;
+      padding: 0 24px;
+    }
+    h1 {
+      font-size: clamp(32px, 5vw, 48px);
+      letter-spacing: -0.045em;
+      margin: 0 0 20px;
+    }
+    .box {
+      background: #fff;
+      border: 1px solid #d9e2df;
+      border-radius: 18px;
+      padding: clamp(20px, 4vw, 36px);
+    }
+    .drop {
+      border: 1px dashed #a4b9b2;
+      border-radius: 12px;
+      padding: 30px 18px;
+      text-align: center;
+      background: #f7faf8;
+    }
+    .over {
+      background: #e0f2e9;
+    }
+    label {
+      display: inline-block;
+      background: #176247;
+      color: white;
+      border-radius: 8px;
+      padding: 10px 18px;
+      cursor: pointer;
+    }
+    label:focus-within {
+      outline: 3px solid #387fbc;
+    }
+    input {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      opacity: 0;
+    }
+    p,
+    small {
+      color: #53676b;
+    }
+    h2 {
+      font-size: 20px;
+      margin: 32px 0 10px;
+    }
+    .item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid #dce4e1;
+      padding: 14px 0;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .item strong {
+      overflow-wrap: anywhere;
+    }
+    .item span {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .item button {
+      font: inherit;
+      color: #993e30;
+      background: white;
+      border: 1px solid #dbcfcc;
+      border-radius: 7px;
+      padding: 3px 10px;
+      cursor: pointer;
+    }
+    .item button:disabled {
+      opacity: 0.5;
+      cursor: default;
+    }
+    a {
+      color: #14634e;
+    }
+    progress {
+      width: 100%;
+      accent-color: #176247;
+    }
+    #status:empty {
+      display: none;
+    }
+  </style>
+  <header>迹航　/　地图工作室</header>
+  <main>
+    <h1>地图工作室</h1>
+    <section class="box">
+      <div class="drop" id="drop">
+        <label
+          >选择 PCD 文件<input type="file" id="file" accept=".pcd"
+        /></label>
+        <p>或拖入已校平的点云文件，坐标单位为米</p>
+      </div>
+      <p id="status" role="status"></p>
+      <progress id="progress" hidden></progress>
+    </section>
+    <h2>已导入地图</h2>
+    <div id="projects">读取中…</div>
+  </main>
+  <script type="module">
+    const el = (id) => document.getElementById(id);
+    let busy = false;
+    async function list() {
+      const response = await fetch("/projects");
+      if (!response.ok) throw Error("读取历史地图失败");
+      const records = await response.json();
+      el("projects").replaceChildren();
+      if (!records.length) el("projects").textContent = "尚未导入点云";
+      for (const item of records) {
+        const row = document.createElement("div");
+        row.className = "item";
+        const title = document.createElement("strong");
+        title.textContent = item.source;
+        const links = document.createElement("span");
+        const count = document.createElement("small");
+        const imported = new Date(item.imported * 1000).toLocaleString("zh-CN");
+        count.textContent = `${item.count.toLocaleString()} 个点 · ${imported}`;
+        links.append(count);
+        for (const [label, suffix] of [
+          ["选层", ""],
+          ...(item.generated ? [["编辑地图", "editor"]] : []),
+        ]) {
+          const link = document.createElement("a");
+          link.textContent = label;
+          link.href = "/p/" + item.id + "/" + suffix;
+          links.append(link);
+        }
+        const remove = document.createElement("button");
+        remove.textContent = "删除";
+        remove.disabled = item.building;
+        remove.onclick = async () => {
+          if (
+            !confirm(
+              `删除 ${item.source}（${imported}）？\n工作室中的点云副本、生成地图、路线和编辑历史将永久删除。电脑上的原始文件会保留。`,
+            )
+          )
+            return;
+          remove.disabled = true;
+          try {
+            const result = await fetch(`/p/${item.id}/delete`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ epoch: item.epoch }),
+            });
+            if (!result.ok) throw Error((await result.json()).message);
+            await list();
+          } catch (error) {
+            el("status").textContent = error.message;
+            remove.disabled = false;
+          }
+        };
+        links.append(remove);
+        row.append(title, links);
+        el("projects").append(row);
+      }
+    }
+    function upload(file) {
+      if (busy || !file) return;
+      busy = true;
+      el("file").disabled = true;
+      el("progress").hidden = false;
+      el("status").textContent = "上传 " + file.name;
+      const req = new XMLHttpRequest();
+      req.open("POST", "/import");
+      req.setRequestHeader("X-Filename", encodeURIComponent(file.name));
+      req.upload.onprogress = (e) => {
+        if (e.lengthComputable) {
+          el("progress").max = e.total;
+          el("progress").value = e.loaded;
+        }
+      };
+      req.upload.onload = () => {
+        el("progress").removeAttribute("value");
+        el("status").textContent = "正在检查点云、建立空间分块并提取候选楼层…";
+      };
+      function reset(message) {
+        el("status").textContent = message;
+        el("progress").hidden = true;
+        el("file").disabled = false;
+        el("file").value = "";
+        busy = false;
+      }
+      req.onerror = () => reset("上传失败，请检查连接后重试");
+      req.onload = () => {
+        try {
+          const result = JSON.parse(req.responseText);
+          if (req.status === 200) location.href = result.url;
+          else reset(result.message);
+        } catch {
+          reset("无法读取导入结果");
+        }
+      };
+      req.send(file);
+    }
+    el("file").onchange = (e) => upload(e.target.files[0]);
+    el("drop").ondragover = (e) => {
+      e.preventDefault();
+      el("drop").classList.add("over");
+    };
+    el("drop").ondragleave = () => el("drop").classList.remove("over");
+    el("drop").ondrop = (e) => {
+      e.preventDefault();
+      el("drop").classList.remove("over");
+      upload(e.dataTransfer.files[0]);
+    };
+    list().catch((e) => (el("projects").textContent = e.message));
+  </script>
+</html>

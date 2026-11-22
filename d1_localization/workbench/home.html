@@ -1,0 +1,42 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>迹航 · 工作台</title>
+<style>*{box-sizing:border-box}body{margin:0;background:#f5f6f8;color:#242832;font:15px system-ui}nav{height:46px;display:flex;align-items:center;gap:24px;padding:0 4vw;border-bottom:1px solid #ddd;background:white}a{color:#596772;text-decoration:none}a[aria-current]{color:#155f50;font-weight:650}iframe{display:block;border:0;width:100%;height:calc(100dvh - 46px)}button{font:inherit;cursor:pointer}.settings{margin-left:auto;background:#f2f4f6;color:#344054;border:0;border-radius:8px;padding:6px 13px}dialog{color:#242832;border:1px solid #dce0e4;border-radius:18px;width:min(380px,88vw);padding:24px;box-shadow:0 15px 60px #0002}dialog::backdrop{background:#17242b55}dialog h2{margin:0;font-size:22px}fieldset{border:0;padding:0;margin:20px 0}legend{font-weight:650;margin-bottom:9px}label{display:grid;grid-template-columns:1fr auto;margin:8px 0;gap:4px}input[type=range]{grid-column:span 2;width:100%;accent-color:#166452}output{font-variant-numeric:tabular-nums}small{color:#667085}footer{display:flex;justify-content:flex-end;gap:8px}footer button{border:0;border-radius:8px;padding:8px 18px}#save{background:#166452;color:white}#message{font-size:14px;color:#984512}</style>
+<nav aria-label="工作区"><a href="#navigation">导航工作台</a><a href="#manual">手动控制</a><button class="settings" id="settings">速度设置</button></nav>
+<dialog id="dialog"><h2>速度设置</h2><form id="form"><div id="fields"></div><small>这里设置各轴上限，零指令停车。手动速度在下次按住摇杆或转向按钮时生效，导航速度在下次开始任务时生效。</small><p id="message" role="status"></p><footer><button type="button" id="close">关闭</button><button id="save">保存</button></footer></form></dialog><iframe title="工作区内容"></iframe><script>
+function select(){const page=location.hash==='#manual'?'manual':'navigation';document.querySelector('iframe').src='/'+page;for(const a of document.links)a.toggleAttribute('aria-current',a.hash==='#'+page)}
+onhashchange=select;select();
+const el=id=>document.getElementById(id);
+for(const [mode,title] of Object.entries({manual:'手动控制',navigation:'自动导航'})){
+  const field=document.createElement('fieldset'), legend=document.createElement('legend');
+  legend.textContent=title; field.append(legend);
+  for(const [key,name,min,max,unit] of [['forward','前后速度上限',.05,3,'m/s'],['lateral','横移速度上限',.10,1,'m/s'],['yaw','转向速度上限',.02,3,'rad/s']]){
+    const label=document.createElement('label'), input=document.createElement('input'), value=document.createElement('output');
+    Object.assign(input,{type:'range',min,max,step:.01,id:mode+'-'+key});
+    input.oninput=()=>value.textContent=Number(input.value).toFixed(2)+' '+unit;
+    label.append(name,value,input); field.append(label);
+  }
+  el('fields').append(field);
+}
+el('settings').onclick=async()=>{
+  el('message').textContent=''; el('save').disabled=true; el('fields').hidden=true; el('dialog').showModal();
+  try{
+    const r=await fetch('/api/speeds',{cache:'no-store'}); if(!r.ok)throw Error('请重新启动定位与 Web 服务以加载速度设置。');
+    const settings=await r.json();
+    for(const [mode,axes] of Object.entries(settings))for(const [axis,val] of Object.entries(axes)){
+      const input=el(mode+'-'+axis); input.value=val; input.oninput();
+    }
+    el('fields').hidden=false; el('save').disabled=false;
+  }catch(e){el('message').textContent=e.message}
+};
+el('close').onclick=()=>el('dialog').close();
+el('form').onsubmit=async e=>{
+  e.preventDefault();el('save').disabled=true;
+  const data={};for(const mode of ['manual','navigation']){
+    data[mode]={};for(const axis of ['forward','lateral','yaw'])data[mode][axis]=Number(el(mode+'-'+axis).value);
+  }
+  try{
+    const r=await fetch('/api/speeds',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
+    const result=await r.json();if(!r.ok)throw Error(result.error||'保存失败');
+    el('dialog').close();
+  }catch(e){el('message').textContent=e.message}finally{el('save').disabled=false}
+};
+</script></html>

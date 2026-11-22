@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>D1 EDU · 初始定位测试</title>
+<style>
+body{margin:32px auto;padding:0 18px;max-width:930px;background:#f3f5f7;color:#1d2834;font:16px system-ui}
+main{background:white;border-radius:16px;padding:20px}
+h1{font-size:24px}canvas{display:block;width:100%;height:65vh;background:#edf0f3;border-radius:10px;touch-action:none;cursor:crosshair}
+output{display:block;margin-top:12px}small{color:#4d5764}
+button{border:1px solid #c9d0d7;border-radius:8px;background:white;padding:8px 15px;font:inherit}
+button:enabled{cursor:pointer}
+#controls{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+#controlStatus{margin:0}
+</style>
+<h1>D1 EDU · 初始定位测试</h1>
+<main>
+<p id="mapName">加载地图中</p>
+<canvas id="map" aria-label="在机身位置按住，沿狗头朝向拖动"></canvas>
+<output id="status">等待传感器</output>
+<p><small>在机身位置按住鼠标，沿狗头朝向拖动后松开。绿色箭头表示定位结果。</small></p>
+<section id="controls" aria-label="机器狗控制">
+<button data-control="stand" disabled>站立</button>
+<button data-control="lie" disabled>趴下</button>
+<button data-control="stop" disabled>停止运动</button>
+<div>手动短动 · 每次点击最多 0.30 秒，以狗头为前方</div>
+<button data-control="forward" disabled>前进</button>
+<button data-control="backward" disabled>后退</button>
+<button data-control="left" disabled>左移</button>
+<button data-control="right" disabled>右移</button>
+<button data-control="turn_left" disabled>左转</button>
+<button data-control="turn_right" disabled>右转</button>
+<output id="controlStatus">控制服务未启用</output>
+</section>
+</main>
+<script type="module">
+const canvas = document.querySelector('#map');
+const context = canvas.getContext('2d');
+const status = document.querySelector('#status');
+const atlas = await (await fetch('/map')).json();
+const [rows, columns] = atlas.shape;
+const floor = atlas.floors[0];
+const raster = document.createElement('canvas');
+raster.width = rows;
+raster.height = columns;
+const rasterContext = raster.getContext('2d');
+const pixels = atob(floor.pixels);
+const palette = ['#edf0f3', '#8e9ba7', '#ffffff'];
+for (let x = 0; x < rows; x++) for (let y = 0; y < columns; y++) {
+  rasterContext.fillStyle = palette[pixels.charCodeAt(x * columns + y)] ?? palette[0];
+  rasterContext.fillRect(x, columns - y - 1, 1, 1);
+}
+document.querySelector('#mapName').textContent = floor.name + ' · ' + floor.height.toFixed(3) + ' m';
+const labels = {WAITING_FOR_INITIAL_POSE:'等待初始位姿',COLLECTING:'采集点云',MATCHING:'正在匹配',LOCALIZED:'定位成功',FAILED:'定位失败',LOST:'定位丢失'};
+let drag, cursor, result = {}, scale, left, top, pending = false;
+const controlButtons = Array.from(document.querySelectorAll('[data-control]'));
+const controlStatus = document.querySelector('#controlStatus');
+let controlPending = false;
+let controlAvailable = false;
+function showControl(available) {
+  if (!available && controlAvailable) controlStatus.textContent = '控制服务已断开';
+  if (available && !controlAvailable) controlStatus.textContent = '控制已连接';
+  controlAvailable = available;
+  controlButtons.forEach(button => button.disabled = !available || (controlPending && button.dataset.control !== 'stop'));
+}
+for (const button of controlButtons) button.onclick = async () => {
+  const action = button.dataset.control;
+  if (['stand','lie'].includes(action) && !window.confirm('确认周围有足够空间，执行「' + button.textContent + '」？')) return;
+  controlPending = true;
+  showControl(controlAvailable);
+  try {
+    const response = await fetch('/control/' + action, {method:'POST'});
+    controlStatus.textContent = (await response.json()).message;
+  } catch {
+    controlStatus.textContent = '控制连接已断开';
+  } finally {
+    controlPending = false;
+    showControl(controlAvailable);
+  }
+};
+function asWorld([x,y]) {
+  return [atlas.origin[0] + ((x-left)/scale - .5)*atlas.resolution,
+          atlas.origin[1] + (columns - .5 - (y-top)/scale)*atlas.resolution];
+}
+function draw() {
+  const bounds = canvas.getBoundingClientRect();
+  const ratio = devicePixelRatio;
+  canvas.width = Math.round(bounds.width * ratio);
+  canvas.height = Math.round(bounds.height * ratio);
+  context.scale(ratio, ratio);
+  scale = Math.min((bounds.width-30)/rows,(bounds.height-30)/columns);
+  left = (bounds.width-rows*scale)/2;
+  top = (bounds.height-columns*scale)/2;
+  context.imageSmoothingEnabled = false;
+  context.drawImage(raster,left,top,rows*scale,columns*scale);
+  if (drag && cursor) arrow(drag,Math.atan2(drag[1]-cursor[1],cursor[0]-drag[0]),'#935110');
+  if (!pending && result.pose) {
+    const [x,y,,yaw] = result.pose;
+    arrow([left+((x-atlas.origin[0])/atlas.resolution+.5)*scale,
+           top+(columns-.5-(y-atlas.origin[1])/atlas.resolution)*scale],yaw,'#007a60');
+  }
+}
+function arrow([x,y], yaw, color) {
+  context.save(); context.translate(x,y); context.rotate(-yaw); context.fillStyle=color;
+  context.beginPath(); context.moveTo(16,0); context.lineTo(-7,-7); context.lineTo(-7,7);
+  context.closePath(); context.fill(); context.restore();
+}
+const position = event => {const box=canvas.getBoundingClientRect(); return [event.clientX-box.left,event.clientY-box.top];};
+canvas.onpointerdown = event => {
+  if (pending) return;
+  canvas.setPointerCapture(event.pointerId); drag=cursor=position(event); draw();
+};
+canvas.onpointermove = event => {if (drag) {cursor=position(event);draw();}};
+canvas.onpointercancel = () => {drag=cursor=null;draw();};
+canvas.onpointerup = async event => {
+  if (!drag) return;
+  const end = position(event), start = drag;
+  drag=cursor=null;
+  if (Math.hypot(end[0]-start[0],end[1]-start[1]) < 6) return draw();
+  pending=true;result={};draw();
+  try {
+    const response=await fetch('/seed',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify([...asWorld(start),Math.atan2(start[1]-end[1],end[0]-start[0])])});
+    if (!response.ok) throw Error('请从地图范围内拖动');
+    status.textContent='已提交初始位姿';
+  } catch(error) {status.textContent=error.message;}
+  finally {pending=false;}
+};
+new ResizeObserver(draw).observe(canvas);
+async function update() {
+  try {
+    const state=await (await fetch('/status')).json();
+    showControl(state.control === true);
+    if (!pending) {
+      result=state;
+      status.textContent=(labels[state.state] ?? state.state)+' · '+(state.cloud?'已收到点云':'等待实时点云')+
+        (['FAILED','LOST'].includes(state.state) && state.reason ? ' · '+state.reason : '');
+      draw();
+    }
+  } catch {status.textContent='连接已断开';showControl(false);result={};draw();}
+  setTimeout(update,450);
+}
+update();
+</script>
+</html>

@@ -1,0 +1,14 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>d1_odom_bringup</name>
+  <version>0.1.0</version>
+  <description>D1 EDU sensor and body odometry bringup.</description>
+  <maintainer email="biao876990970@hotmail.com">Robot-Nav</maintainer>
+  <license>Apache-2.0</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <depend>legbot_runtime</depend>
+  <exec_depend>fast_lio</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>robot_state_publisher</exec_depend>
+  <export><build_type>ament_cmake</build_type></export>
+</package>

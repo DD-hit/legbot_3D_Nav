@@ -1,0 +1,12 @@
+id: map-90574a2d78fc
+version: pcd-89847b1cfdb6
+frame: map
+floors:
+- - -0.561
+  - 地面
+pcd: ./source.pcd
+tomogram: ./planning
+display: ./display.json
+floor_ranges:
+- - -0.655
+  - -0.395

@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="zh-CN">
+  <meta charset="utf-8" /><meta
+    name="viewport"
+    content="width=device-width,initial-scale=1"
+  /><title>规划地图编辑 · 迹航</title
+  ><style>
+    * {
+      box-sizing: border-box;
+    }
+    body {
+      margin: 0;
+      background: #f4f6f6;
+      color: #203035;
+      font:
+        16px/1.45 -apple-system,
+        BlinkMacSystemFont,
+        "PingFang SC",
+        sans-serif;
+    }
+    header,
+    main {
+      padding: 15px clamp(12px, 3vw, 46px);
+    }
+    header,
+    .bar,
+    .group {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      flex-wrap: wrap;
+    }
+    header {
+      background: white;
+      border-bottom: 1px solid #d8e1df;
+      justify-content: space-between;
+    }
+    a {
+      color: #175c48;
+    }
+    main {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 310px;
+      gap: 14px;
+    }
+    .panel {
+      background: white;
+      border: 1px solid #dce3e1;
+      border-radius: 14px;
+      padding: 16px;
+      min-width: 0;
+    }
+    h1 {
+      font-size: 21px;
+      line-height: 1.2;
+      margin: 0;
+    }
+    h2 {
+      font-size: 16px;
+      margin: 0 0 9px;
+    }
+    h3 {
+      font-size: 14px;
+      margin: 0 0 5px;
+    }
+    button,
+    select,
+    input {
+      font: inherit;
+      border: 1px solid #cad4d1;
+      border-radius: 7px;
+      padding: 6px 9px;
+      background: white;
+      color: inherit;
+    }
+    button,
+    select {
+      cursor: pointer;
+    }
+    button:disabled {
+      opacity: 0.43;
+      cursor: default;
+    }
+    .primary {
+      background: #146448;
+      color: white;
+    }
+    button[aria-pressed="true"] {
+      background: #e0f0e9;
+      border-color: #70a794;
+    }
+    small,
+    output,
+    .hint {
+      font-size: 14px;
+      color: #53676c;
+    }
+    .bar {
+      justify-content: space-between;
+      margin-bottom: 10px;
+    }
+    #map {
+      width: 100%;
+      height: clamp(420px, 70vh, 950px);
+      border-radius: 9px;
+      background: #edf1ef;
+      display: block;
+      touch-action: none;
+      cursor: crosshair;
+    }
+    #cloud {
+      width: 100%;
+      height: 260px;
+      background: #edf1ef;
+      touch-action: none;
+      display: block;
+    }
+    section + section {
+      border-top: 1px solid #e1e6e4;
+      padding-top: 13px;
+      margin-top: 13px;
+    }
+    .fields {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+    }
+    .fields label {
+      font-size: 13px;
+      color: #52666a;
+    }
+    .fields input {
+      width: 100%;
+    }
+    .wide {
+      width: 100%;
+      margin-top: 7px;
+    }
+    .hint {
+      margin: 7px 0;
+    }
+    dialog {
+      width: min(630px, 93vw);
+      border: 1px solid #c9d3d0;
+      border-radius: 14px;
+    }
+    dialog::backdrop {
+      background: #28373266;
+    }
+    #status {
+      min-height: 1.5em;
+    }
+    #status[data-error="true"] {
+      color: #983c20;
+    }
+    .legend {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 13px;
+    }
+    .legend i {
+      width: 11px;
+      height: 11px;
+      border-radius: 3px;
+    }
+    #stairs {
+      margin: 8px 0;
+    }
+    #stairs:empty {
+      display: none;
+    }
+    #stairs button {
+      font-size: 13px;
+    }
+    #stairs button[aria-pressed="true"] {
+      border-color: var(--ink);
+      color: var(--ink);
+      background: white;
+    }
+    @media (max-width: 850px) {
+      main {
+        grid-template-columns: 1fr;
+      }
+      #map {
+        height: 52vh;
+        min-height: 300px;
+      }
+    }
+  </style>
+  <header>
+    <div class="group">
+      <a href="/">地图工作室</a><span> / </span>
+      <h1>规划地图编辑</h1>
+    </div>
+    <div class="group">
+      <a href="./">楼层确认</a><a id="export" href="export">导出地图包</a>
+    </div>
+  </header>
+  <main>
+    <div class="panel">
+      <div class="bar">
+        <label
+          >楼层
+          <select id="floor"></select
+        ></label>
+        <div class="group">
+          <button id="auto">对照自动结果</button><button id="fit">全图</button>
+        </div>
+      </div>
+      <canvas id="map" aria-label="可编辑规划地图"></canvas>
+      <div class="group" id="stairs" aria-label="本层楼梯"></div>
+      <div class="bar">
+        <div class="group">
+          <span class="legend"><i style="background: #8fc9b1"></i>可通行</span
+          ><span class="legend"><i style="background: #cca58b"></i>受限</span
+          ><span class="legend"><i style="background: #e9eeec"></i>未知</span
+          ><span class="legend"
+            ><i style="background: #654e45"></i>人工障碍</span
+          ><span class="legend"><i style="background: #91709a"></i>禁行区</span>
+        </div>
+        <output id="position"></output>
+      </div>
+      <p id="status" role="status"></p>
+    </div>
+    <aside class="panel">
+      <section>
+        <h2>地图工具</h2>
+        <div class="group" id="tools">
+          <button data-tool="pan">浏览</button
+          ><button data-tool="lasso">套索</button
+          ><button data-tool="box">长方体</button
+          ><button data-tool="route">试规划</button>
+        </div>
+        <p class="hint" id="hint"></p>
+      </section>
+      <section id="selection">
+        <h2>选区</h2>
+        <select id="action" class="wide">
+          <option value="paint_free">标为可通行 · 直接覆盖选区</option>
+          <option value="free">自动清障并修补小缺口</option>
+          <option value="obstacle">标为障碍物</option>
+          <option value="deny">标为禁行区</option>
+          <option value="fill">补建楼面 / 修补踏面缺口</option>
+          <option value="restore">恢复自动结果</option>
+        </select>
+        <div id="boxFields" class="fields">
+          <label>中心 X（m）<input id="cx" type="number" step="0.1" /></label
+          ><label>中心 Y（m）<input id="cy" type="number" step="0.1" /></label
+          ><label
+            >长度（m）<input
+              id="width"
+              type="number"
+              min="0.1"
+              step="0.1" /></label
+          ><label
+            >宽度（m）<input
+              id="depth"
+              type="number"
+              min="0.1"
+              step="0.1" /></label
+          ><label>旋转角（°）<input id="angle" type="number" step="1" /></label>
+        </div>
+        <div class="fields">
+          <label>下限 Z（m）<input id="lo" type="number" step="0.01" /></label
+          ><label>上限 Z（m）<input id="hi" type="number" step="0.01" /></label
+          ><label id="fillLabel" hidden
+            >楼面标高（m）<input id="height" type="number" step="0.001"
+          /></label>
+        </div>
+        <button class="wide" id="inspect">查看选区局部点云</button
+        ><button class="wide" id="preview">预览修改</button
+        ><button class="wide primary" id="apply" disabled>应用修改</button>
+      </section>
+      <section>
+        <h2>编辑历史</h2>
+        <div class="group">
+          <button id="undo" disabled>撤销上一步</button
+          ><button id="redo" disabled>重做</button>
+        </div>
+        <p id="history" class="hint"></p>
+      </section>
+      <section id="regression" hidden>
+        <h2>路线检查</h2>
+        <input
+          class="wide"
+          id="routeName"
+          maxlength="64"
+          placeholder="路线名称"
+          aria-label="路线名称"
+        /><button class="wide" id="saveRoute">保存本次起终点</button
+        ><select id="routes" class="wide" aria-label="已保存路线"></select>
+        <div class="group">
+          <button id="testRoutes">复测全部</button
+          ><button id="removeRoute">删除所选</button>
+        </div>
+        <output id="routeResult"></output>
+      </section>
+    </aside>
+  </main>
+  <dialog id="dialog">
+    <div class="bar">
+      <h2>局部原始点云</h2>
+      <button id="close">关闭</button>
+    </div>
+    <canvas id="cloud"></canvas
+    ><small>拖动旋转，滚轮缩放。绿色为选区内指定高度的采样。</small>
+  </dialog>
+  <dialog id="flightDialog">
+    <h2>选区涉及楼梯</h2>
+    <p>选择本层楼面或要编辑的梯段。</p>
+    <div class="group" id="flightChoices"></div>
+    <button class="wide" id="skipFlight">取消</button>
+  </dialog>
+  <script type="module" src="editorjs"></script>
+</html>
